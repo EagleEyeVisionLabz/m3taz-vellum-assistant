@@ -155,6 +155,7 @@ const ACTOR_ENDPOINTS: Array<{ endpoint: string; scopes: Scope[] }> = [
   { endpoint: "conversations/attention", scopes: ["chat.read"] },
   { endpoint: "conversations/seen", scopes: ["chat.write"] },
   { endpoint: "conversations/unread", scopes: ["chat.write"] },
+  { endpoint: "conversations/import", scopes: ["chat.write"] },
   { endpoint: "search", scopes: ["chat.read"] },
   { endpoint: "search/global", scopes: ["chat.read"] },
   { endpoint: "suggestion", scopes: ["chat.read"] },
@@ -512,6 +513,11 @@ const ACTOR_ENDPOINTS: Array<{ endpoint: string; scopes: Scope[] }> = [
   { endpoint: "settings/avatar/generate", scopes: ["settings.write"] },
   { endpoint: "avatar/character-components", scopes: ["settings.read"] },
   { endpoint: "avatar/render-from-traits", scopes: ["settings.write"] },
+  { endpoint: "avatar/generate", scopes: ["settings.write"] },
+  { endpoint: "avatar/set", scopes: ["settings.write"] },
+  { endpoint: "avatar/remove", scopes: ["settings.write"] },
+  { endpoint: "avatar/get", scopes: ["settings.read"] },
+  { endpoint: "avatar/character/ascii", scopes: ["settings.read"] },
   { endpoint: "settings/client", scopes: ["settings.write"] },
 
   // Schedules
