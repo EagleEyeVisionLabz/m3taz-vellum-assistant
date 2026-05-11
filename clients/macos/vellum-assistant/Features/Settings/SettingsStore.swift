@@ -3414,6 +3414,89 @@ public final class SettingsStore: ObservableObject {
         return success
     }
 
+    /// In-flight `setProfileStatus` PATCHes, keyed by profile name. Used by
+    /// `deleteProfile` to serialize per-profile writes and prevent a
+    /// status-only PATCH from resurrecting a deleted profile if it arrives
+    /// at the daemon out of order. See `setProfileStatus` and
+    /// `deleteProfile` below. (Codex P1, iter2.)
+    private var pendingStatusPatches: [String: Task<Bool, Never>] = [:]
+
+    /// Flips the visibility status of an inference profile in-place.
+    /// Used by the inline list-row toggle in `InferenceProfilesSheet` so
+    /// users can hide a profile from pickers without opening the editor.
+    ///
+    /// Wire shape: `{ llm: { profiles: { <name>: { status: "active" | "disabled" } } } }`.
+    /// Bypasses `InferenceProfile.toJSON()` which omits status when active
+    /// (absent==active convention) — the schema accepts the literal
+    /// "active" string and treats it equivalently to absent, but the
+    /// daemon's deep-merge only updates the field when the key is present.
+    ///
+    /// Optimistic update + rollback on failure mirrors the provider
+    /// connection status toggle pattern in `ProvidersSheet`.
+    ///
+    /// Concurrency: the PATCH task is registered in `pendingStatusPatches`
+    /// so `deleteProfile` can await it before issuing its own delete
+    /// PATCH. This prevents the "toggle then delete" race where a
+    /// status-only PATCH arrives at the daemon after the delete and
+    /// resurrects the profile as `{ status: "disabled" }` (deep-merge
+    /// re-creates the key). (Codex P1, iter2.)
+    @discardableResult
+    func setProfileStatus(name: String, active: Bool) async -> Bool {
+        // Existence guard: if the profile is no longer in `profiles` (e.g. a
+        // concurrent config sync removed it between render and the toggle
+        // handler firing), skip the PATCH entirely. Sending a status-only
+        // payload here would be deep-merged by the daemon and resurrect the
+        // profile key with `{ status: ... }` only — leaving a partial /
+        // orphaned profile in pickers. Same resurrection class of bug as
+        // the toggle→delete race already serialized via
+        // `pendingStatusPatches`. (Codex P2, iter2 round 2.)
+        guard profiles.contains(where: { $0.name == name }) else {
+            log.warning("setProfileStatus called for missing profile \(name, privacy: .public); skipping PATCH to avoid resurrection")
+            return false
+        }
+        let previousStatus = profiles.first(where: { $0.name == name })?.status
+        let nextLocalStatus: String? = active ? nil : "disabled"
+        let wireStatus: String = active ? "active" : "disabled"
+
+        // Optimistic update
+        if let idx = profiles.firstIndex(where: { $0.name == name }) {
+            var copy = profiles[idx]
+            copy.status = nextLocalStatus
+            profiles[idx] = copy
+        }
+
+        // Register the PATCH as an in-flight task so `deleteProfile` can
+        // serialize after it. The capture-list weak ref keeps the cleanup
+        // path safe across early `await` suspensions.
+        let patchTask: Task<Bool, Never> = Task { [weak self] in
+            guard let self else { return false }
+            return await self.settingsClient.patchConfig([
+                "llm": ["profiles": [name: ["status": wireStatus]]]
+            ])
+        }
+        pendingStatusPatches[name] = patchTask
+        let success = await patchTask.value
+        // Clear only if it's still our task (another toggle may have
+        // overwritten the slot during the await — leave that entry in
+        // place so a concurrent `deleteProfile` still serializes after
+        // the newer PATCH). `Task` conforms to Hashable, so `==` compares
+        // the underlying job identity.
+        if pendingStatusPatches[name] == patchTask {
+            pendingStatusPatches[name] = nil
+        }
+
+        if !success {
+            log.error("Failed to patch status for llm.profiles.\(name, privacy: .public)")
+            // Roll back
+            if let idx = profiles.firstIndex(where: { $0.name == name }) {
+                var copy = profiles[idx]
+                copy.status = previousStatus
+                profiles[idx] = copy
+            }
+        }
+        return success
+    }
+
     /// Replaces the Settings-UI-managed leaves for a profile. Unlike
     /// `setProfile`, nil fields in `fragment` are treated as removals by
     /// the assistant route, so hidden or toggled-off editor controls do not
@@ -3525,6 +3608,14 @@ public final class SettingsStore: ObservableObject {
         let conflictingCallSites = callSiteIdsReferencingProfile(name)
         if !conflictingCallSites.isEmpty {
             return .blockedByCallSites(conflictingCallSites)
+        }
+        // Serialize after any in-flight `setProfileStatus` PATCH for this
+        // profile so the delete PATCH arrives at the daemon strictly after
+        // the status PATCH. Without this, a fast "toggle then delete" can
+        // re-create the profile as `{ status: "disabled" }` via deep-merge.
+        // (Codex P1, iter2.)
+        if let pending = pendingStatusPatches[name] {
+            _ = await pending.value
         }
         let nextOrder = hasExplicitProfileOrder ? profileOrder.filter { $0 != name } : nil
         var llmPatch: [String: Any] = ["profiles": [name: NSNull()]]
