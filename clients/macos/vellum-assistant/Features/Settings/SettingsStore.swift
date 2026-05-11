@@ -270,10 +270,6 @@ public final class SettingsStore: ObservableObject {
     /// Values: `"user-key"`, `"managed-proxy"`, or absent.
     @Published var providerRoutingSources: [String: String] = [:]
 
-    /// Current inference mode from the daemon debug endpoint.
-    /// Values: `"managed"` or `"your-own"`.
-    @Published var inferenceMode: String = "your-own"
-
     /// Current image generation mode. Values: "managed" or "your-own".
     @Published var imageGenMode: String = "your-own"
 
@@ -2341,9 +2337,6 @@ public final class SettingsStore: ObservableObject {
         let llmDefault = (config["llm"] as? [String: Any])?["default"] as? [String: Any]
         let inference = services?["inference"] as? [String: Any]
 
-        if let inference, let mode = inference["mode"] as? String {
-            self.inferenceMode = mode
-        }
         // Only apply local config provider/model as a fallback when the daemon
         // hasn't yet reported an authoritative value. Once the daemon responds
         // via applyModelInfoResponse, its values take precedence over local
@@ -2394,22 +2387,6 @@ public final class SettingsStore: ObservableObject {
            let mode = notionOAuth["mode"] as? String {
             self.managedOAuthMode["notion"] = mode
         }
-    }
-
-    @discardableResult
-    func setInferenceMode(_ mode: String) -> Task<Bool, Never> {
-        inferenceMode = mode
-        let task = Task {
-            let success = await settingsClient.patchConfig([
-                "services": ["inference": ["mode": mode]]
-            ])
-            if !success {
-                log.error("Failed to patch config for inference mode")
-            }
-            return success
-        }
-        scheduleRoutingSourceRefresh()
-        return task
     }
 
     @discardableResult
