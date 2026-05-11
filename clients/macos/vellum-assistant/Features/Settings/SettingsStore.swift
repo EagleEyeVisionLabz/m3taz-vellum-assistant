@@ -70,13 +70,13 @@ public final class SettingsStore: ObservableObject {
 
     // MARK: - Model Selection
 
-    @Published var selectedModel: String = LLMProviderRegistry.defaultProvider?.defaultModel ?? ""
+    @Published var selectedModel: String = LLMProviderRegistry.defaultProvider.defaultModel
     @Published var configuredProviders: Set<String> = ["ollama"]
     @Published var selectedImageGenModel: String = "gemini-3.1-flash-image-preview"
 
     // MARK: - Inference Provider Selection
 
-    @Published var selectedInferenceProvider: String = "anthropic"
+    @Published var selectedInferenceProvider: String = LLMProviderRegistry.defaultProvider.id
 
     /// Full provider catalog from daemon. Seeded with inline defaults for pre-fetch rendering.
     @Published var providerCatalog: [ProviderCatalogEntry] = []
