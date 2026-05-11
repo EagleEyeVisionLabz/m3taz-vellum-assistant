@@ -59,6 +59,18 @@ struct ProvidersSheet: View {
     enum EditorState {
         case create
         case edit(name: String)
+        /// Opened for connections whose `isManaged` flag is true (the daemon
+        /// sets this for the canonical anthropic-managed / openai-managed /
+        /// gemini-managed rows). The daemon write-protects DELETE + PATCH-auth
+        /// on these rows; the UI mirrors that by disabling every input and
+        /// hiding the Save button. Mirrors the `view` mode in
+        /// `InferenceProfilesSheet`.
+        case view(name: String)
+    }
+
+    private var isViewMode: Bool {
+        if case .view = editorState { return true }
+        return false
     }
 
     struct ConflictInfo: Identifiable {
@@ -203,7 +215,8 @@ struct ProvidersSheet: View {
     }
 
     private func connectionRow(_ conn: ProviderConnection) -> some View {
-        HStack(alignment: .center, spacing: VSpacing.md) {
+        let isManaged = conn.isManaged
+        return HStack(alignment: .center, spacing: VSpacing.md) {
             VStack(alignment: .leading, spacing: VSpacing.xxs) {
                 if let label = conn.label {
                     Text(label)
@@ -213,6 +226,10 @@ struct ProvidersSheet: View {
                         Text("@\(conn.name)")
                             .font(VFont.bodySmallDefault)
                             .foregroundStyle(VColor.contentSecondary)
+                        if isManaged {
+                            VBadge(label: "Vellum", tone: .neutral, emphasis: .subtle)
+                                .help("Connections managed by Vellum cannot be edited or deleted")
+                        }
                         VBadge(
                             label: store.dynamicProviderDisplayName(conn.provider),
                             tone: .neutral,
@@ -232,6 +249,10 @@ struct ProvidersSheet: View {
                         Text(conn.name)
                             .font(VFont.bodyMediumEmphasised)
                             .foregroundStyle(VColor.contentDefault)
+                        if isManaged {
+                            VBadge(label: "Vellum", tone: .neutral, emphasis: .subtle)
+                                .help("Connections managed by Vellum cannot be edited or deleted")
+                        }
                         VBadge(
                             label: store.dynamicProviderDisplayName(conn.provider),
                             tone: .neutral,
@@ -250,12 +271,18 @@ struct ProvidersSheet: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: VSpacing.xs) {
-                VButton(label: "Edit", style: .ghost) {
-                    beginEdit(conn)
+                VButton(label: isManaged ? "View" : "Edit", style: .ghost) {
+                    if isManaged {
+                        beginView(conn)
+                    } else {
+                        beginEdit(conn)
+                    }
                 }
                 VButton(label: "Delete", style: .ghost) {
                     Task { await attemptDelete(conn.name) }
                 }
+                .disabled(isManaged)
+                .help(isManaged ? "Managed connections cannot be deleted" : "")
             }
         }
         .padding(.vertical, VSpacing.xs)
@@ -307,6 +334,7 @@ struct ProvidersSheet: View {
                     }
                 }
                 .padding(VSpacing.lg)
+                .disabled(isViewMode)
             }
             SettingsDivider()
             editorFooter
@@ -326,6 +354,7 @@ struct ProvidersSheet: View {
                 switch editorState {
                 case .create: return "New Connection"
                 case .edit(let name): return "Edit \"\(name)\""
+                case .view(let name): return "View \"\(name)\""
                 case nil: return ""
                 }
             }()
@@ -333,10 +362,15 @@ struct ProvidersSheet: View {
                 Text(title)
                     .font(VFont.titleSmall)
                     .foregroundStyle(VColor.contentDefault)
+                if isViewMode {
+                    Text("Managed by Vellum — cannot be edited or deleted.")
+                        .font(VFont.bodySmallDefault)
+                        .foregroundStyle(VColor.contentSecondary)
+                }
             }
             Spacer(minLength: 0)
             VButton(
-                label: "Cancel",
+                label: isViewMode ? "Done" : "Cancel",
                 style: .ghost,
                 tintColor: VColor.contentTertiary
             ) {
@@ -604,12 +638,14 @@ struct ProvidersSheet: View {
     private var editorFooter: some View {
         HStack {
             Spacer()
-            VButton(label: "Cancel", style: .outlined) {
+            VButton(label: isViewMode ? "Done" : "Cancel", style: .outlined) {
                 editorState = nil
                 actionError = nil
             }
-            VButton(label: "Save", style: .primary) {
-                Task { await commitEditor() }
+            if !isViewMode {
+                VButton(label: "Save", style: .primary) {
+                    Task { await commitEditor() }
+                }
             }
         }
         .padding(VSpacing.lg)
@@ -682,6 +718,30 @@ struct ProvidersSheet: View {
             status: conn.status
         )
         editorState = .edit(name: conn.name)
+
+        if conn.auth.type == "api_key", let credential = conn.auth.credential, !credential.isEmpty {
+            Task {
+                await loadMaskedValue(for: credential)
+                await loadAvailableCredentials()
+            }
+        }
+    }
+
+    /// Open the editor in read-only view mode for a managed connection.
+    /// All inputs are disabled and Save is hidden via `isViewMode`. Mirrors
+    /// the managed-profile `beginView` flow in `InferenceProfilesSheet`.
+    private func beginView(_ conn: ProviderConnection) {
+        actionError = nil
+        isKeyDirty = true
+        editorDraft = ConnectionDraft(
+            name: conn.name,
+            label: conn.label ?? "",
+            provider: conn.provider,
+            authType: conn.auth.type,
+            credential: conn.auth.credential ?? "",
+            status: conn.status
+        )
+        editorState = .view(name: conn.name)
 
         if conn.auth.type == "api_key", let credential = conn.auth.credential, !credential.isEmpty {
             Task {
@@ -772,6 +832,11 @@ struct ProvidersSheet: View {
                 connections[idx] = updated
             }
             editorState = nil
+
+        case .view:
+            // View mode hides the Save button (`isViewMode` in editorFooter),
+            // so this branch should be unreachable. No-op for exhaustiveness.
+            break
 
         case nil:
             break
