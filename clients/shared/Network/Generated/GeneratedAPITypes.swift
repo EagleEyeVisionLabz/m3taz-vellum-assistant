@@ -5970,21 +5970,48 @@ public struct ProviderConnectionAuth: Codable, Sendable {
     }
 }
 
+/// Status of a provider connection. `active` (default) means the connection
+/// is offered in picker UIs. `disabled` hides it from pickers but keeps it
+/// visible in the settings sheet so the user can re-enable it.
+public enum ConnectionStatus: String, Codable, Sendable {
+    case active
+    case disabled
+}
+
 /// A named provider connection stored in the assistant database.
 public struct ProviderConnection: Codable, Sendable {
     public let name: String
     /// One of: `anthropic`, `openai`, `gemini`, `ollama`, `fireworks`, `openrouter`.
     public let provider: String
     public let auth: ProviderConnectionAuth
+    public let status: ConnectionStatus
+    public let label: String?
     public let createdAt: Int
     public let updatedAt: Int
 
-    public init(name: String, provider: String, auth: ProviderConnectionAuth, createdAt: Int, updatedAt: Int) {
+    public init(name: String, provider: String, auth: ProviderConnectionAuth, status: ConnectionStatus = .active, label: String? = nil, createdAt: Int, updatedAt: Int) {
         self.name = name
         self.provider = provider
         self.auth = auth
+        self.status = status
+        self.label = label
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    /// Decodes responses from daemons that predate the `status` field by
+    /// defaulting to `.active`. Mixed-version setups (the app explicitly
+    /// supports them via version-mismatch handling) would otherwise throw
+    /// `keyNotFound` and silently strand the Providers UI.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.provider = try container.decode(String.self, forKey: .provider)
+        self.auth = try container.decode(ProviderConnectionAuth.self, forKey: .auth)
+        self.status = try container.decodeIfPresent(ConnectionStatus.self, forKey: .status) ?? .active
+        self.label = try container.decodeIfPresent(String.self, forKey: .label)
+        self.createdAt = try container.decode(Int.self, forKey: .createdAt)
+        self.updatedAt = try container.decode(Int.self, forKey: .updatedAt)
     }
 }
 
@@ -6002,20 +6029,28 @@ public struct CreateProviderConnectionRequest: Codable, Sendable {
     public let name: String
     public let provider: String
     public let auth: ProviderConnectionAuth
+    public let label: String?
+    public let status: ConnectionStatus?
 
-    public init(name: String, provider: String, auth: ProviderConnectionAuth) {
+    public init(name: String, provider: String, auth: ProviderConnectionAuth, label: String? = nil, status: ConnectionStatus? = nil) {
         self.name = name
         self.provider = provider
         self.auth = auth
+        self.label = label
+        self.status = status
     }
 }
 
 /// Request body for `PATCH /v1/inference/provider-connections/:name`.
 public struct UpdateProviderConnectionRequest: Codable, Sendable {
     public let auth: ProviderConnectionAuth
+    public let status: ConnectionStatus?
+    public let label: String?
 
-    public init(auth: ProviderConnectionAuth) {
+    public init(auth: ProviderConnectionAuth, status: ConnectionStatus? = nil, label: String? = nil) {
         self.auth = auth
+        self.status = status
+        self.label = label
     }
 }
 
