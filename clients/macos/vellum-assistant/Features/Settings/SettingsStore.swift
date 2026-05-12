@@ -3464,6 +3464,85 @@ public final class SettingsStore: ObservableObject {
         return success
     }
 
+    /// Persists the two policy-edit fields (`label`, `status`) for a
+    /// managed profile via the `PUT /v1/config/llm/profiles/<name>` route.
+    /// Used by view-mode Save on managed profiles: the daemon's route
+    /// detects `MANAGED_PROFILE_NAMES` and applies a partial overlay (label/
+    /// status only, every other seed field preserved) instead of the full
+    /// UI-replace cycle that `replaceProfile` triggers. Sending any other
+    /// field for a managed name causes the daemon to reject the request
+    /// with a 400 — see `handleReplaceInferenceProfile` in
+    /// `assistant/src/runtime/routes/conversation-query-routes.ts`.
+    ///
+    /// Wire-payload shaping is constrained by the daemon's `ProfileEntry`
+    /// Zod schema (`assistant/src/config/schemas/llm.ts`):
+    ///   `label: z.string().min(1).optional()`
+    ///   `status: ProfileStatusSchema.optional()` // enum: "active" | "disabled"
+    /// Neither field is `.nullable()`, so sending `null` for either fails
+    /// `safeParse` and the daemon rejects the entire request with 400
+    /// (Codex P1 on #30368). The wire payload must therefore include a
+    /// valid value or omit the key entirely — never null.
+    ///
+    /// - `label`: whitespace-trimmed, then included only when non-empty.
+    ///   Whitespace-only / nil input → key omitted → daemon's partial
+    ///   overlay leaves the existing on-disk label untouched. This means
+    ///   there is no way via this method to clear a previously-set label
+    ///   override back to the seed default; that would require the daemon
+    ///   schema to be `.nullable()` (separate follow-up).
+    /// - `status`: normalized to the literal enum values the daemon
+    ///   accepts. `nil` / empty / anything other than `"disabled"` becomes
+    ///   `"active"` so the toggle from disabled → active flips on disk
+    ///   (omitting the key would leave `"disabled"` stored). Local
+    ///   convention is `status == nil` for active; the wire shape uses
+    ///   `"active"` explicitly because Zod rejects null.
+    ///
+    /// On success the local `profiles` cache is patched in place so the UI
+    /// reflects the new values without waiting for the next daemon config
+    /// push. Only `label` and `status` are touched in the local entry —
+    /// every other field on the cached profile (provider, model, advanced
+    /// params) is preserved, mirroring the daemon-side partial overlay.
+    @discardableResult
+    func setManagedProfilePolicy(
+        name: String,
+        label: String?,
+        status: String?
+    ) async -> Bool {
+        let trimmedLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasLabel = !(trimmedLabel ?? "").isEmpty
+        let normalizedStatus: String = (status == "disabled") ? "disabled" : "active"
+        var fragment: [String: Any] = ["status": normalizedStatus]
+        if hasLabel {
+            fragment["label"] = trimmedLabel
+        }
+        let success = await settingsClient.replaceInferenceProfile(
+            name: name,
+            fragment: fragment
+        )
+        if success {
+            // Re-lookup post-await: a concurrent `loadInferenceProfiles`
+            // can replace `profiles` during the suspension, so a captured
+            // index would be stale.
+            if let index = profiles.firstIndex(where: { $0.name == name }) {
+                var updated = profiles[index]
+                if hasLabel {
+                    // Daemon stored the new label; mirror it locally.
+                    updated.label = trimmedLabel
+                }
+                // Local cache stores `nil` for active to match the rest
+                // of the codebase's nil-as-active convention. The wire
+                // sent "active" verbatim; both shapes hit `isStatusActive`
+                // as the same bucket, and the next daemon config push
+                // would normalize the local cache to "active" anyway —
+                // either store is functionally equivalent.
+                updated.status = normalizedStatus == "active" ? nil : "disabled"
+                profiles[index] = updated
+            }
+        } else {
+            log.error("Failed to setManagedProfilePolicy for llm.profiles.\(name, privacy: .public)")
+        }
+        return success
+    }
+
     /// Replaces the Settings-UI-managed leaves for a profile. Unlike
     /// `setProfile`, nil fields in `fragment` are treated as removals by
     /// the assistant route, so hidden or toggled-off editor controls do not
