@@ -1,22 +1,41 @@
 /**
  * Public plugin-API types.
  *
- * This module is the source-of-truth for types that plugin authors depend on.
- * The rest of the assistant imports from here via relative paths
- * (`../plugin-api/types.js`). At publish time, this file's contents are
- * bundled into the `@vellumai/plugin-api` npm package; at runtime in the
- * assistant binary, the same source is reachable to user plugins via a
- * boot-time shim that re-exports from the embedded bundle.
+ * This module is the entry point plugin authors land on when they import
+ * from `@vellumai/plugin-api`. The shapes here are the canonical public
+ * contract — anything exported is part of the surface that semver gates.
  *
- * Today this module is intentionally narrow — `PluginInitContext`,
- * `PluginShutdownContext`, and the `PluginLogger` shape they reference.
- * Additional public types migrate over in follow-up PRs as the surface
- * stabilizes.
+ * ## Tool-execution types
  *
- * Internal-only types (pipeline shapes, middleware, manifest validation,
- * etc.) stay in `assistant/src/plugins/types.ts` until they're ready to
- * become public.
+ * `ToolContext` and `ToolExecutionResult` are re-exports of the narrow,
+ * stable bases defined alongside their daemon-internal counterparts in
+ * `assistant/src/tools/types.ts`. The daemon-internal `ToolContext` /
+ * `ToolExecutionResult` (with CES, trust classification, lifecycle
+ * events, sensitive-output bindings, risk metadata, etc.) `extends`
+ * the public bases, so the runtime can hand plugins the full value
+ * without a manual cast and tsc enforces the structural relationship.
+ * Plugin tools see the narrow surface only — they MUST NOT set fields
+ * that belong to the daemon-internal extension.
+ *
+ * ## Hook contexts
+ *
+ * The init / shutdown hook contexts are owned by this module directly.
+ * They have no daemon-internal extension today (the daemon constructs
+ * and hands them straight through), so there's nothing to inherit from.
+ *
+ * ## Compatibility
+ *
+ * Adding fields to any public shape is non-breaking. Renaming or
+ * removing fields is breaking and gated on a major bump of
+ * `@vellumai/plugin-api`.
  */
+
+// ─── Tool-execution types (re-exported from daemon source-of-truth) ──────────
+
+export type {
+  PluginToolContext as ToolContext,
+  PluginToolExecutionResult as ToolExecutionResult,
+} from "../tools/types.js";
 
 // ─── Logger ──────────────────────────────────────────────────────────────────
 
