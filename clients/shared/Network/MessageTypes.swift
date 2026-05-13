@@ -2885,6 +2885,7 @@ public struct SubagentAbortMessage: Encodable, Sendable {
 /// Wire type: `"subagent_event"`
 public struct SubagentEventMessage: Decodable, Sendable {
     public let subagentId: String
+    public let conversationId: String?
     public let event: ServerMessage
 }
 
