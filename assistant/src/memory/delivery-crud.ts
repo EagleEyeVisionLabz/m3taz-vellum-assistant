@@ -23,6 +23,33 @@ export interface InboundResult {
 export interface RecordInboundOptions {
   sourceMessageId?: string;
   assistantId?: string;
+  sourceThreadId?: string;
+}
+
+function buildScopedConversationKeyForAssistant(
+  assistantId: string,
+  sourceChannel: string,
+  externalChatId: string,
+  sourceThreadId?: string | null,
+): string {
+  const threadId = sourceThreadId?.trim();
+  if (sourceChannel === "slack" && threadId) {
+    return `asst:${assistantId}:${sourceChannel}:${externalChatId}:thread:${threadId}`;
+  }
+  return `asst:${assistantId}:${sourceChannel}:${externalChatId}`;
+}
+
+export function buildScopedConversationKey(
+  sourceChannel: string,
+  externalChatId: string,
+  sourceThreadId?: string | null,
+): string {
+  return buildScopedConversationKeyForAssistant(
+    DAEMON_INTERNAL_ASSISTANT_ID,
+    sourceChannel,
+    externalChatId,
+    sourceThreadId,
+  );
 }
 
 /**
@@ -62,7 +89,12 @@ export function recordInbound(
   }
 
   const assistantId = options?.assistantId ?? DAEMON_INTERNAL_ASSISTANT_ID;
-  const scopedKey = `asst:${assistantId}:${sourceChannel}:${externalChatId}`;
+  const scopedKey = buildScopedConversationKeyForAssistant(
+    assistantId,
+    sourceChannel,
+    externalChatId,
+    options?.sourceThreadId,
+  );
   const mapping = getOrCreateConversation(scopedKey);
   const now = Date.now();
   const eventId = uuid();
@@ -176,4 +208,3 @@ export function clearPayload(eventId: string): void {
     .where(eq(channelInboundEvents.id, eventId))
     .run();
 }
-

@@ -2,15 +2,19 @@
  * Channel conversation deletion handler.
  */
 import { deleteConversationKey } from "../../memory/conversation-key-store.js";
-import { deleteBindingByChannelChat } from "../../memory/external-conversation-store.js";
-import { DAEMON_INTERNAL_ASSISTANT_ID } from "../assistant-scope.js";
+import { buildScopedConversationKey } from "../../memory/delivery-crud.js";
+import {
+  deleteBindingByChannelChat,
+  deleteBindingByChannelChatThread,
+} from "../../memory/external-conversation-store.js";
 import { BadRequestError } from "./errors.js";
 import type { RouteHandlerArgs } from "./types.js";
 
 export function handleDeleteConversation({ body = {} }: RouteHandlerArgs) {
-  const { sourceChannel, conversationExternalId } = body as {
+  const { sourceChannel, conversationExternalId, sourceThreadId } = body as {
     sourceChannel?: string;
     conversationExternalId?: string;
+    sourceThreadId?: string;
   };
 
   if (!sourceChannel || typeof sourceChannel !== "string") {
@@ -20,14 +24,24 @@ export function handleDeleteConversation({ body = {} }: RouteHandlerArgs) {
     throw new BadRequestError("conversationExternalId is required");
   }
 
-  const assistantId = DAEMON_INTERNAL_ASSISTANT_ID;
+  const normalizedThreadId = sourceThreadId?.trim() || undefined;
 
-  const scopedKey = `asst:${assistantId}:${sourceChannel}:${conversationExternalId}`;
+  const scopedKey = buildScopedConversationKey(
+    sourceChannel,
+    conversationExternalId,
+    normalizedThreadId,
+  );
   deleteConversationKey(scopedKey);
-  if (assistantId === DAEMON_INTERNAL_ASSISTANT_ID) {
-    const legacyKey = `${sourceChannel}:${conversationExternalId}`;
+  const legacyKey = `${sourceChannel}:${conversationExternalId}`;
+  if (!normalizedThreadId) {
     deleteConversationKey(legacyKey);
     deleteBindingByChannelChat(sourceChannel, conversationExternalId);
+  } else {
+    deleteBindingByChannelChatThread(
+      sourceChannel,
+      conversationExternalId,
+      normalizedThreadId,
+    );
   }
 
   return { ok: true };
