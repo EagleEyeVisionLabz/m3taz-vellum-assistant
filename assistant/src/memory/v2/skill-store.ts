@@ -79,6 +79,11 @@ export function skillSlugFor(id: string): string {
  * successful re-seed so callers always see a consistent snapshot.
  */
 let entries: Map<string, SkillEntry> | null = null;
+let requestedSeedGeneration = 0;
+let processedSeedGeneration = 0;
+let activeSeedDrain: Promise<void> | null = null;
+let lastSeedError: unknown = null;
+const seedWaiters: Array<{ generation: number; resolve: () => void }> = [];
 
 /**
  * Seed (or re-seed) skill embeddings into the unified concept-page collection.
@@ -86,15 +91,12 @@ let entries: Map<string, SkillEntry> | null = null;
  * background callers like daemon startup; pass `{ throwOnError: true }` from
  * synchronous CLI-driven paths that need to surface failures to the operator.
  *
- * Single-flight + coalesced: at most one seed runs at a time, and concurrent
- * callers are coalesced into one follow-up re-snapshot that runs after the
- * in-flight seed completes. Without this, an older snapshot can finish after
- * a newer one and overwrite the newer skill state. Strict callers observe
- * the most recent run's outcome via `lastSeedError`.
+ * Single-flight + coalesced: at most one seed runs at a time. Requests made
+ * while a seed is in flight advance the requested generation; stale in-flight
+ * snapshots are skipped before they write embeddings or replace the cache,
+ * then the drain loop immediately processes the latest generation. Strict
+ * callers observe the awaited generation's latest outcome via `lastSeedError`.
  */
-let seedTail: Promise<void> = Promise.resolve();
-let seedPending: Promise<void> | null = null;
-let lastSeedError: unknown = null;
 
 /**
  * In-process latch for the legacy `kind` backfill (see
@@ -102,23 +104,6 @@ let lastSeedError: unknown = null;
  * so once the latch is set there is no follow-up work to do this process.
  */
 let legacyKindBackfillDone = false;
-
-export async function seedV2SkillEntries(
-  opts: { throwOnError?: boolean } = {},
-): Promise<void> {
-  if (!seedPending) {
-    const next = seedTail.then(async () => {
-      seedPending = null;
-      await runSeedOnce();
-    });
-    seedTail = next.catch(() => {});
-    seedPending = next;
-  }
-  await seedPending;
-  if (opts.throwOnError && lastSeedError) {
-    throw lastSeedError;
-  }
-}
 
 /**
  * Steps (per run):
@@ -140,7 +125,49 @@ export async function seedV2SkillEntries(
  *      stale points from prior catalog state (e.g. uninstalled skills).
  *   7. Replace the module-level `entries` cache with the freshly built map.
  */
-async function runSeedOnce(): Promise<void> {
+export async function seedV2SkillEntries(
+  opts: { throwOnError?: boolean } = {},
+): Promise<void> {
+  const generation = ++requestedSeedGeneration;
+  const waiter = new Promise<void>((resolve) => {
+    seedWaiters.push({ generation, resolve });
+  });
+  startSeedDrainIfNeeded();
+  await waiter;
+  if (opts.throwOnError && lastSeedError) {
+    throw lastSeedError;
+  }
+}
+
+function startSeedDrainIfNeeded(): void {
+  if (activeSeedDrain) return;
+  if (processedSeedGeneration >= requestedSeedGeneration) return;
+
+  activeSeedDrain = drainSeedQueue().finally(() => {
+    activeSeedDrain = null;
+    startSeedDrainIfNeeded();
+  });
+}
+
+async function drainSeedQueue(): Promise<void> {
+  while (processedSeedGeneration < requestedSeedGeneration) {
+    const generationToProcess = requestedSeedGeneration;
+    await runSeedV2SkillEntries(generationToProcess);
+    processedSeedGeneration = generationToProcess;
+    resolveSeedWaiters();
+  }
+}
+
+function resolveSeedWaiters(): void {
+  for (let i = seedWaiters.length - 1; i >= 0; i -= 1) {
+    const waiter = seedWaiters[i]!;
+    if (waiter.generation > processedSeedGeneration) continue;
+    seedWaiters.splice(i, 1);
+    waiter.resolve();
+  }
+}
+
+async function runSeedV2SkillEntries(generation: number): Promise<void> {
   try {
     const config = getConfig();
     const catalog = loadSkillCatalog();
@@ -200,12 +227,16 @@ async function runSeedOnce(): Promise<void> {
     // unavailable embedding backend in the all-disabled case, so pruning and
     // cache replacement still run and clear stale state.
     const nextEntries = new Map<string, SkillEntry>();
+    let denseVectors: number[][] = [];
+    let encodeSparse: (
+      input: string,
+    ) => ReturnType<typeof generateSparseEmbedding> = generateSparseEmbedding;
     if (seeds.length > 0) {
       const embedded = await embedWithBackend(
         config,
         seeds.map((s) => s.content),
       );
-      const denseVectors = await Promise.all(
+      denseVectors = await Promise.all(
         embedded.vectors.map((v) =>
           applyCorrectionIfCalibrated(v, embedded.provider, embedded.model),
         ),
@@ -219,14 +250,25 @@ async function runSeedOnce(): Promise<void> {
       // entirely. Fall back to the legacy TF encoder only during the cold-start
       // window before corpus stats finish building.
       const corpusStats = getConceptPageCorpusStats();
-      const encodeSparse = (input: string) =>
+      encodeSparse = (input: string) =>
         corpusStats
           ? generateBm25DocEmbedding(input, corpusStats, {
               k1: config.memory.v2.bm25_k1,
               b: config.memory.v2.bm25_b,
             })
           : generateSparseEmbedding(input);
+    }
 
+    if (generation !== requestedSeedGeneration) {
+      log.info(
+        { generation, latestGeneration: requestedSeedGeneration },
+        "Skipping stale v2 skill seed result",
+      );
+      lastSeedError = null;
+      return;
+    }
+
+    if (seeds.length > 0) {
       const now = Date.now();
       await Promise.all(
         seeds.map((seed, i) =>
@@ -337,8 +379,10 @@ export function listSkillEntries(): SkillEntry[] {
 /** @internal Test-only: clear the module-level cache. */
 export function _resetSkillStoreForTests(): void {
   entries = null;
-  seedTail = Promise.resolve();
-  seedPending = null;
+  requestedSeedGeneration = 0;
+  processedSeedGeneration = 0;
+  activeSeedDrain = null;
+  seedWaiters.splice(0, seedWaiters.length);
   lastSeedError = null;
   legacyKindBackfillDone = false;
 }

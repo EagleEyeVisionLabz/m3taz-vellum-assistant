@@ -15,10 +15,13 @@
  *   - It swallows errors from the embedding backend — the function resolves
  *     and the cache is unchanged from prior state.
  *
- * Hermetic by design: the catalog loader, state resolver, embedding backend,
- * Qdrant module, and feature-flag resolver are all module-mocked so the suite
- * never reaches a real backend or filesystem.
+ * Hermetic by design: the embedding backend, Qdrant module, and feature-flag
+ * resolver are module-mocked so the suite never reaches a real backend. One
+ * regression case uses a temp workspace to exercise disk-discovered skills.
  */
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { makeMockLogger } from "../../../__tests__/helpers/mock-logger.js";
@@ -55,8 +58,8 @@ interface BackfillCall {
 }
 
 interface TestState {
-  catalog: SkillSummary[];
-  resolved: ResolvedSkill[];
+  catalog: SkillSummary[] | null;
+  resolved: ResolvedSkill[] | null;
   fullCatalog: CatalogSkill[];
   fullCatalogThrows: Error | null;
   flagsEnabled: Record<string, boolean>;
@@ -97,16 +100,39 @@ mock.module("../../../config/loader.js", () => ({
       qdrant: { url: "http://127.0.0.1:6333", vectorSize: 3, onDisk: false },
     },
     mcp: { servers: {} },
-    skills: { entries: {}, allowBundled: null },
+    skills: { entries: {}, allowBundled: [] },
   }),
 }));
 
 mock.module("../../../config/skills.js", () => ({
-  loadSkillCatalog: () => state.catalog,
+  loadSkillCatalog: () => state.catalog ?? [],
 }));
 
 mock.module("../../../config/skill-state.js", () => ({
-  resolveSkillStates: () => state.resolved,
+  resolveSkillStates: (
+    catalog: SkillSummary[],
+    config: { skills?: { allowBundled?: string[] | null } },
+  ) => {
+    if (state.resolved) return state.resolved;
+    return catalog
+      .filter((summary) => {
+        const allowBundled = config.skills?.allowBundled;
+        return !(
+          summary.source === "bundled" &&
+          allowBundled != null &&
+          !allowBundled.includes(summary.id)
+        );
+      })
+      .map((summary) => ({
+        summary,
+        state:
+          summary.source === "managed" ||
+          summary.source === "bundled" ||
+          summary.source === "plugin"
+            ? "enabled"
+            : "disabled",
+      }));
+  },
 }));
 
 mock.module("../../../config/assistant-feature-flags.js", () => ({
@@ -418,6 +444,154 @@ describe("seedV2SkillEntries", () => {
 
     expect(getSkillCapability("unknown-skill")).toBeNull();
     expect(getSkillCapability("skills/unknown-skill")).toBeNull();
+  });
+
+  test("skips stale in-flight seed results when a newer refresh is requested", async () => {
+    const skillA = makeSummary({
+      id: "example-skill-a",
+      displayName: "Skill A",
+    });
+    const skillB = makeSummary({
+      id: "example-skill-b",
+      displayName: "Skill B",
+    });
+    state.catalog = [skillA];
+    state.resolved = [{ summary: skillA, state: "enabled" }];
+    state.embedReturn = [[0.1, 0.2, 0.3]];
+
+    const firstSeed = seedV2SkillEntries();
+    state.catalog = [skillB];
+    state.resolved = [{ summary: skillB, state: "enabled" }];
+    const secondSeed = seedV2SkillEntries();
+
+    await Promise.all([firstSeed, secondSeed]);
+
+    expect(state.upsertCalls.map((call) => call.slug)).toEqual([
+      "skills/example-skill-b",
+    ]);
+    expect(getSkillCapability("example-skill-a")).toBeNull();
+    expect(getSkillCapability("example-skill-b")?.content).toContain("Skill B");
+  });
+
+  test("continues draining when waiter continuations enqueue additional generations", async () => {
+    const skillA = makeSummary({
+      id: "example-skill-a",
+      displayName: "Skill A",
+    });
+    const skillB = makeSummary({
+      id: "example-skill-b",
+      displayName: "Skill B",
+    });
+    const skillC = makeSummary({
+      id: "example-skill-c",
+      displayName: "Skill C",
+    });
+
+    function useSkill(skill: SkillSummary, dense: number[]): void {
+      state.catalog = [skill];
+      state.resolved = [{ summary: skill, state: "enabled" }];
+      state.embedReturn = [dense];
+    }
+
+    useSkill(skillA, [0.1, 0.2, 0.3]);
+    const firstSeed = seedV2SkillEntries();
+    const secondSeed = firstSeed.then(() => {
+      useSkill(skillB, [0.4, 0.5, 0.6]);
+      return seedV2SkillEntries();
+    });
+    const thirdSeed = secondSeed.then(() => {
+      useSkill(skillC, [0.7, 0.8, 0.9]);
+      return seedV2SkillEntries();
+    });
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await expect(
+        Promise.race([
+          Promise.all([firstSeed, secondSeed, thirdSeed]),
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error("seed queue stalled")),
+              500,
+            );
+          }),
+        ]),
+      ).resolves.toBeDefined();
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+
+    expect(state.upsertCalls.map((call) => call.slug)).toEqual([
+      "skills/example-skill-a",
+      "skills/example-skill-b",
+      "skills/example-skill-c",
+    ]);
+    expect(getSkillCapability("example-skill-a")).toBeNull();
+    expect(getSkillCapability("example-skill-b")).toBeNull();
+    expect(getSkillCapability("example-skill-c")?.content).toContain("Skill C");
+  });
+
+  test("seeds disk-discovered managed skills omitted from a stale SKILLS.md index", async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "skill-store-index-"));
+    state.resolved = null;
+    state.embedReturn = [[0.7, 0.8, 0.9]];
+
+    try {
+      const skillsDir = join(workspaceDir, "skills");
+      const skillDir = join(skillsDir, "geo-article-writer");
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillsDir, "SKILLS.md"), "- stale-only\n", "utf-8");
+      writeFileSync(
+        join(skillDir, "SKILL.md"),
+        `---
+name: "Geo Article Writer"
+description: "Writes local geo articles"
+metadata:
+  vellum:
+    activation-hints:
+      - user asks for local article drafts
+    avoid-when:
+      - user only wants citation extraction
+---
+
+Write a local article draft.
+`,
+        "utf-8",
+      );
+
+      state.catalog = [
+        {
+          id: "geo-article-writer",
+          name: "Geo Article Writer",
+          displayName: "Geo Article Writer",
+          description: "Writes local geo articles",
+          directoryPath: skillDir,
+          skillFilePath: join(skillDir, "SKILL.md"),
+          source: "managed",
+          activationHints: ["user asks for local article drafts"],
+          avoidWhen: ["user only wants citation extraction"],
+        },
+      ];
+
+      await seedV2SkillEntries();
+    } finally {
+      rmSync(workspaceDir, { recursive: true, force: true });
+    }
+
+    expect(state.upsertCalls).toHaveLength(1);
+    expect(state.upsertCalls[0].slug).toBe("skills/geo-article-writer");
+
+    const entry = getSkillCapability("geo-article-writer");
+    expect(entry).not.toBeNull();
+    expect(entry?.id).toBe("geo-article-writer");
+    expect(entry?.content).toContain('The "Geo Article Writer" skill');
+    expect(entry?.content).toContain("Writes local geo articles");
+    expect(entry?.content).toContain(
+      "Use when: user asks for local article drafts.",
+    );
+    expect(entry?.content).toContain(
+      "Avoid when: user only wants citation extraction.",
+    );
   });
 
   test("swallows errors from embedWithBackend and leaves prior cache intact", async () => {
