@@ -83,6 +83,7 @@ import type { PermissionPrompter } from "../permissions/prompter.js";
 import { HOOKS } from "../plugin-api/constants.js";
 import type { UserPromptSubmitContext } from "../plugin-api/types.js";
 import { defaultCompactionTerminal } from "../plugins/defaults/compaction.js";
+import { runEmergencyCompaction } from "../context/compactor.js";
 import { defaultHistoryRepairTerminal } from "../plugins/defaults/history-repair.js";
 import {
   asDefaultGraphPayload,
@@ -463,6 +464,15 @@ export interface AgentLoopConversationContext {
   readonly contextWindowManager: ContextWindowManager;
   contextCompactedMessageCount: number;
   contextCompactedAt: number | null;
+  /**
+   * Set by `applyCompactionResult` when compaction strips runtime injections
+   * from the preserved tail. The next agent loop turn promotes this into a
+   * `compactedThisTurn` signal so NOW.md, PKB, and the v2 static block are
+   * re-injected on the first turn following `/compact` (which runs outside
+   * the agent loop and so has no other way to surface that compaction
+   * happened just before this turn).
+   */
+  pendingPostCompactReinject: boolean;
   /** Tracks consecutive compaction failures (summary LLM call threw). */
   consecutiveCompactionFailures: number;
   /** Timestamp (ms since epoch) until which the circuit breaker is open. */
@@ -919,8 +929,14 @@ export async function runAgentLoopImpl(
     }
 
     const isFirstMessage = ctx.messages.length === 1;
-    let shouldInjectWorkspace = isFirstMessage;
-    let compactedThisTurn = false;
+    // Promote a pending post-compaction re-inject signal (e.g. from `/compact`)
+    // into `compactedThisTurn` so NOW.md / PKB / v2 static blocks land on this
+    // turn even when no mid-turn compaction fires. Clear the flag immediately
+    // so this fires exactly once per `/compact` event.
+    const consumedPostCompactReinject = ctx.pendingPostCompactReinject;
+    ctx.pendingPostCompactReinject = false;
+    let shouldInjectWorkspace = isFirstMessage || consumedPostCompactReinject;
+    let compactedThisTurn = consumedPostCompactReinject;
     let slackCompactedThisTurn = false;
     const isSlackConversation = ctx.channelCapabilities?.channel === "slack";
     let currentSlackContextSummary =
@@ -2476,6 +2492,60 @@ export async function runAgentLoopImpl(
         }
       }
 
+      // ── Emergency mid-turn compaction ────────────────────────────
+      // Before entering the reducer tier loop, attempt a targeted
+      // emergency compaction: summarize everything before the last
+      // tool_use + tool_result pair and let the agent continue with
+      // [summary, last_tool_call, last_tool_result]. This preserves
+      // the agent's most recent action context while aggressively
+      // compressing history. Falls through to reducer tiers on failure.
+      {
+        const emergencyConfig = getConfig().compaction;
+        const emergencyResult = await runEmergencyCompaction({
+          conversationId: ctx.conversationId,
+          messages: ctx.messages,
+          provider: ctx.provider,
+          systemPrompt: ctx.systemPrompt,
+          tools: undefined,
+          compaction: emergencyConfig,
+          maxInputTokens: effectiveContextWindow.maxInputTokens,
+          previousEstimatedInputTokens: estimatedTokensAtOverflow,
+          force: true,
+          signal: abortController.signal,
+          overrideProfile: turnOverrideProfile ?? null,
+          nonPersistedPrefixCount:
+            ctx.contextWindowManager.nonPersistedPrefixCount,
+        });
+        if (emergencyResult.compacted) {
+          rlog.info(
+            {
+              phase: "convergence",
+              compactedMessages: emergencyResult.compactedMessages,
+              summaryChars: emergencyResult.summaryText.length,
+            },
+            "Emergency mid-turn compaction succeeded — bypassing reducer tiers",
+          );
+          if (emergencyResult.summaryFailed !== undefined) {
+            await trackCompactionOutcome(
+              ctx,
+              emergencyResult.summaryFailed,
+              onEvent,
+            );
+          }
+          if (emergencyResult.compacted) {
+            await applySuccessfulCompaction(
+              emergencyResult,
+              ctx.messages,
+            );
+            shouldInjectWorkspace = true;
+          }
+          // Clear the overflow flag and re-run the agent loop with
+          // the compacted context.
+          state.contextTooLargeDetected = false;
+        }
+        // If emergency compaction failed, fall through to reducer tiers.
+      }
+
       let convergenceAttempts = 0;
       const maxAttempts = overflowRecovery.maxAttempts;
 
@@ -3315,6 +3385,7 @@ export interface CompactionApplyContext {
   messages: Message[];
   contextCompactedMessageCount: number;
   contextCompactedAt: number | null;
+  pendingPostCompactReinject: boolean;
   readonly graphMemory: ConversationGraphMemory;
   readonly provider: Provider;
   usageStats: UsageStats;
@@ -3364,6 +3435,10 @@ export async function applyCompactionResult(
   ctx.contextCompactedMessageCount += result.compactedPersistedMessages;
   const compactedAt = Date.now();
   ctx.contextCompactedAt = compactedAt;
+  // Signal to the next agent loop turn that NOW.md / PKB / v2 static blocks
+  // were stripped from the tail and need fresh re-injection. Consumed and
+  // cleared at the top of the next `runAgentLoopImpl` run.
+  ctx.pendingPostCompactReinject = true;
   await ctx.graphMemory.onCompacted(result.compactedPersistedMessages);
   updateConversationContextWindow(
     ctx.conversationId,
