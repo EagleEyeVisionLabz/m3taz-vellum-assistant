@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  deleteDocument,
+  getDocumentById,
+  getDocumentsForConversation,
   saveDocument,
+  searchDocumentsByTitle,
   updateDocumentContent,
 } from "../../documents/document-store.js";
 import type { ToolContext, ToolExecutionResult } from "../types.js";
@@ -85,7 +89,17 @@ export function executeDocumentUpdate(
   const content = input.content as string;
   const mode = (input.mode as string | undefined) || "append";
 
-  updateDocumentContent(surfaceId, content, mode);
+  const result = updateDocumentContent(surfaceId, content, mode);
+  if (!result.success) {
+    return {
+      content: JSON.stringify({
+        success: false,
+        surface_id: surfaceId,
+        error: result.error,
+      }),
+      isError: true,
+    };
+  }
 
   // Send document_editor_update message to update the built-in RTE
   if (context.sendToClient) {
@@ -115,5 +129,83 @@ export function executeDocumentUpdate(
       error: "No client connected to update document",
     }),
     isError: true,
+  };
+}
+
+export function executeDocumentRead(
+  input: Record<string, unknown>,
+  _context: ToolContext,
+): ToolExecutionResult {
+  const surfaceId = input.surface_id as string;
+  const doc = getDocumentById(surfaceId);
+  if (!doc) {
+    return {
+      content: JSON.stringify({
+        success: false,
+        surface_id: surfaceId,
+        error: "Document not found",
+      }),
+      isError: true,
+    };
+  }
+  return {
+    content: JSON.stringify({
+      success: true,
+      surface_id: doc.surfaceId,
+      title: doc.title,
+      content: doc.content,
+      word_count: doc.wordCount,
+      updated_at: doc.updatedAt,
+    }),
+    isError: false,
+  };
+}
+
+export function executeDocumentList(
+  input: Record<string, unknown>,
+  context: ToolContext,
+): ToolExecutionResult {
+  const query = input.query as string | undefined;
+  const docs = query
+    ? searchDocumentsByTitle(query)
+    : getDocumentsForConversation(context.conversationId);
+  return {
+    content: JSON.stringify({
+      success: true,
+      documents: docs.map((d) => ({
+        surface_id: d.surfaceId,
+        title: d.title,
+        word_count: d.wordCount,
+        created_at: d.createdAt,
+        updated_at: d.updatedAt,
+      })),
+    }),
+    isError: false,
+  };
+}
+
+export function executeDocumentDelete(
+  input: Record<string, unknown>,
+  _context: ToolContext,
+): ToolExecutionResult {
+  const surfaceId = input.surface_id as string;
+  const deleted = deleteDocument(surfaceId);
+  if (!deleted) {
+    return {
+      content: JSON.stringify({
+        success: false,
+        surface_id: surfaceId,
+        error: "Document not found",
+      }),
+      isError: true,
+    };
+  }
+  return {
+    content: JSON.stringify({
+      success: true,
+      surface_id: surfaceId,
+      message: "Document deleted",
+    }),
+    isError: false,
   };
 }
