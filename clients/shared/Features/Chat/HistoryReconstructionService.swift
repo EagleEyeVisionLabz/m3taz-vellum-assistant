@@ -153,7 +153,7 @@ public enum HistoryReconstructionService {
             }
 
             if role == .assistant {
-                for tc in toolCalls where tc.toolName == "subagent_spawn" {
+                for tc in toolCalls {
                     if let result = tc.result,
                        let data = result.data(using: .utf8),
                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -170,7 +170,8 @@ public enum HistoryReconstructionService {
                     label: notification.label,
                     status: SubagentStatus(wire: notification.status),
                     parentMessageId: parentId,
-                    conversationId: notification.conversationId
+                    conversationId: notification.conversationId,
+                    objective: notification.objective
                 )
                 info.error = notification.error
                 reconstructedSubagents.append(info)
