@@ -1054,6 +1054,9 @@ export async function handleChannelInbound({
                     displayName: body.actorDisplayName ?? body.actorUsername!,
                   }
                 : {}),
+              ...(trustCtx.requesterExternalUserId
+                ? { actorExternalUserId: trustCtx.requesterExternalUserId }
+                : {}),
             }
           : undefined;
 
@@ -1127,10 +1130,14 @@ export async function handleChannelInbound({
       const contentForProcessing =
         trustCtx.trustClass !== "guardian"
           ? wrapUntrustedContent(trimmedContent, {
-              source: "webhook",
+              source: sourceChannel === "slack" ? "slack" : "webhook",
               sourceDetail: trustCtx.requesterIdentifier,
             })
           : trimmedContent;
+      const displayContentForProcessing =
+        sourceChannel === "slack" && trustCtx.trustClass !== "guardian"
+          ? trimmedContent
+          : undefined;
 
       // Fire-and-forget: process the message and deliver the reply in the background.
       // The HTTP response returns immediately so the gateway webhook is not blocked.
@@ -1141,6 +1148,7 @@ export async function handleChannelInbound({
         conversationId: result.conversationId,
         eventId: result.eventId,
         content: contentForProcessing,
+        displayContent: displayContentForProcessing,
         attachmentIds: hasAttachments ? attachmentIds : undefined,
         sourceChannel,
         sourceInterface,
@@ -1464,6 +1472,7 @@ async function persistBackfilledSlackMessage(params: {
     name: f.name,
     ...(f.mimetype ? { mimetype: f.mimetype } : {}),
   }));
+  const actorExternalUserId = message.sender?.id?.trim();
   const slackMeta: SlackMessageMetadata = {
     source: "slack",
     channelId: params.channelId,
@@ -1471,6 +1480,7 @@ async function persistBackfilledSlackMessage(params: {
     eventKind: "message",
     ...(message.threadId ? { threadTs: message.threadId } : {}),
     ...(message.sender?.name ? { displayName: message.sender.name } : {}),
+    ...(actorExternalUserId ? { actorExternalUserId } : {}),
     ...(slackFiles.length > 0 ? { slackFiles } : {}),
   };
 
@@ -1480,29 +1490,19 @@ async function persistBackfilledSlackMessage(params: {
   );
   const role = "user";
 
-  // Non-guardian backfilled messages enter the model context wrapped in
-  // `<external_content>` boundaries — same contract as the live inbound path.
-  // Guardian-authored turns are left unwrapped so they read as normal trusted
-  // history.
   const rawText = message.text ?? "";
-  const textForPersist =
-    !isGuardian && rawText.length > 0
-      ? wrapUntrustedContent(rawText, {
-          source: "webhook",
-          ...(message.sender?.name
-            ? { sourceDetail: message.sender.name }
-            : {}),
-        })
-      : rawText;
 
-  const persisted = await addMessage(
-    params.conversationId,
-    role,
-    textForPersist,
-    {
-      slackMeta: writeSlackMetadata(slackMeta),
-    },
-  );
+  const persisted = await addMessage(params.conversationId, role, rawText, {
+    slackMeta: writeSlackMetadata(slackMeta),
+    provenanceTrustClass: isGuardian ? "guardian" : "unknown",
+    provenanceSourceChannel: "slack",
+    ...(params.guardianExternalUserId
+      ? { provenanceGuardianExternalUserId: params.guardianExternalUserId }
+      : {}),
+    ...(actorExternalUserId
+      ? { provenanceRequesterIdentifier: actorExternalUserId }
+      : {}),
+  });
 
   // Hydrate image attachments inline, then rewrite the saved row to include
   // `type: "image"` content blocks. Slack context assembly reloads from
@@ -1588,7 +1588,7 @@ async function persistBackfilledSlackMessage(params: {
     updateMessageContent(
       persisted.id,
       JSON.stringify(
-        buildBackfilledSlackContentBlocks(textForPersist, hydratedAttachments),
+        buildBackfilledSlackContentBlocks(rawText, hydratedAttachments),
       ),
     );
   }
