@@ -235,6 +235,14 @@ export function unregisterPlugin(name: string): void {
   registeredPlugins.delete(name);
 }
 
+export function getRegisteredPlugin(name: string): Plugin | undefined {
+  return registeredPlugins.get(name);
+}
+
+export function setRegisteredPlugin(plugin: Plugin): void {
+  registeredPlugins.set(plugin.manifest.name, plugin);
+}
+
 // ─── Test hooks ──────────────────────────────────────────────────────────────
 
 /**

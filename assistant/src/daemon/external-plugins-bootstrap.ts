@@ -61,18 +61,24 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { isAssistantFeatureFlagEnabled } from "../config/assistant-feature-flags.js";
+import { getConfig } from "../config/loader.js";
 import type { AssistantConfig } from "../config/schema.js";
 import { HOOKS } from "../plugin-api/constants.js";
 import { registerDefaultPlugins } from "../plugins/defaults/index.js";
+import { buildExternalPlugin } from "../plugins/external-plugin-loader.js";
 import {
   registerPluginSkills,
   unregisterPluginSkills,
 } from "../plugins/plugin-skill-contributions.js";
-import { getRegisteredPlugins, unregisterPlugin } from "../plugins/registry.js";
+import {
+  getRegisteredPlugin,
+  getRegisteredPlugins,
+  setRegisteredPlugin,
+  unregisterPlugin,
+} from "../plugins/registry.js";
 import {
   type Plugin,
   PluginExecutionError,
-  type PluginInitContext,
   type PluginShutdownContext,
   type PluginSkillRegistration,
 } from "../plugins/types.js";
@@ -88,6 +94,7 @@ import {
 } from "../tools/registry.js";
 import { getLogger } from "../util/logger.js";
 import { getWorkspaceDir } from "../util/platform.js";
+import { APP_VERSION } from "../version.js";
 import { registerShutdownHook } from "./shutdown-registry.js";
 
 const log = getLogger("plugins-bootstrap");
@@ -174,6 +181,16 @@ function ensurePluginStorageDir(pluginName: string): string {
   return dir;
 }
 
+function getDisabledPluginFlag(
+  plugin: Plugin,
+  config: AssistantConfig,
+): string | undefined {
+  for (const flagKey of plugin.manifest.requiresFlag ?? []) {
+    if (!isAssistantFeatureFlagEnabled(flagKey, config)) return flagKey;
+  }
+  return undefined;
+}
+
 /**
  * Run every registered plugin's `init()` hook sequentially and install a
  * reverse-order shutdown hook. See the module docstring for full semantics.
@@ -249,200 +266,20 @@ export async function bootstrapPlugins(ctx: DaemonContext): Promise<void> {
 
   for (const plugin of plugins) {
     const name = plugin.manifest.name;
-
-    // Feature-flag gating — if any key in `manifest.requiresFlag` is
-    // disabled, skip this plugin entirely. Skipping means: no `init()`, no
-    // tool / route / skill contributions, and no shutdown hook entry. A
-    // later boot with the flag flipped ON picks up the plugin cleanly.
-    const requiredFlags = plugin.manifest.requiresFlag ?? [];
-    let disabledFlag: string | undefined;
-    for (const flagKey of requiredFlags) {
-      if (!isAssistantFeatureFlagEnabled(flagKey, ctx.config)) {
-        disabledFlag = flagKey;
-        break;
-      }
-    }
+    const disabledFlag = getDisabledPluginFlag(plugin, ctx.config);
     if (disabledFlag !== undefined) {
       log.info(
         { plugin: name, flag: disabledFlag },
         `skipping plugin ${name}: feature flag ${disabledFlag} is disabled`,
       );
-      // Drop the plugin from the registry too. `registerPlugin()` added it at
-      // import time, and `getMiddlewaresFor()` / `getInjectors()` iterate over
-      // every registered entry — without this call, the gated plugin's
-      // middleware and injectors would still participate in every pipeline
-      // run and system-prompt assembly despite `init()` never firing.
       unregisterPlugin(name);
       continue;
     }
 
-    // Collected as routes are accepted so the catch block can revoke exactly
-    // the routes this plugin contributed if a later contribution step throws.
-    // Hoisted above the try so it's in scope for the error path.
-    const routeHandles: SkillRouteHandle[] = [];
-
-    // Tracks whether `plugin.init()` ran to completion (or the plugin has no
-    // init at all). The catch block consults this to decide whether the
-    // currently-failing plugin's `onShutdown()` may run: onShutdown is paired
-    // with init, so a plugin that never completed init never set up the state
-    // onShutdown is meant to tear down. Calling onShutdown in that case would
-    // surprise plugin authors (their teardown runs against an uninitialized
-    // self) and breaks the documented lifecycle contract.
-    let initCompleted = false;
-
     try {
-      // Credential resolution — gather every entry in `requiresCredential`
-      // before calling `init()` so the plugin receives a fully-populated map.
-      const credentials: Record<string, string> = {};
-      const required = plugin.manifest.requiresCredential ?? [];
-      for (const key of required) {
-        credentials[key] = await resolveCredentialOrThrow(name, key);
-      }
-
-      // Per-plugin config block, validated against the manifest's parser-like
-      // validator when one is declared.
-      const rawConfig = getPluginConfigRaw(ctx.config, name);
-      const config = validatePluginConfig(
-        name,
-        plugin.manifest.config,
-        rawConfig,
-      );
-
-      // Per-plugin writable data directory. Created lazily during bootstrap
-      // rather than at registration time so the side effect is isolated to
-      // the boot path.
-      const pluginStorageDir = ensurePluginStorageDir(name);
-
-      const initContext: PluginInitContext = {
-        config,
-        credentials,
-        logger: log.child({ plugin: name }),
-        pluginStorageDir,
-        assistantVersion: ctx.assistantVersion,
-      };
-
-      // Wire the plugin's contributions into their registries BEFORE
-      // `init()` runs so the hook can observe its own tools / routes /
-      // skills already live. Each contribution step is strict-fail: any
-      // failure aborts bootstrap with a {@link PluginExecutionError}
-      // naming the offending plugin and triggers the rollback path below.
-      if (plugin.tools && plugin.tools.length > 0) {
-        try {
-          const accepted = registerPluginTools(name, plugin.tools);
-          log.info(
-            { plugin: name, count: accepted.length },
-            "plugin tools registered",
-          );
-        } catch (err) {
-          throw new PluginExecutionError(
-            `plugin ${name} tool registration failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-            name,
-            { cause: err },
-          );
-        }
-      }
-
-      // Route contributions mirror the skill-route registry shape; see
-      // {@link PluginRouteRegistration}. Retain every returned handle so
-      // the teardown path unregisters by identity rather than pattern text
-      // — two plugins (or a plugin and a skill) that happen to register
-      // the same regex must not evict each other's routes during shutdown.
-      if (plugin.routes && plugin.routes.length > 0) {
-        for (const route of plugin.routes) {
-          routeHandles.push(registerSkillRoute(route));
-        }
-        log.info(
-          { plugin: name, count: plugin.routes.length },
-          "plugin routes registered",
-        );
-      }
-
-      // Skills register into the in-memory plugin-skill catalog so
-      // `skill_load` / `skill_execute` can resolve them alongside
-      // filesystem skills. A registration failure aborts bootstrap with
-      // the plugin named — same strict-fail posture as init() throws.
-      if (plugin.skills && plugin.skills.length > 0) {
-        try {
-          // `plugin.skills` is typed as `PluginSkillRegistration[]` at
-          // the Plugin interface — the type assertion here is a narrowing
-          // from that generic slot into the concrete shape the registry
-          // expects.
-          registerPluginSkills(
-            name,
-            plugin.skills as readonly PluginSkillRegistration[],
-          );
-        } catch (err) {
-          throw new PluginExecutionError(
-            `plugin ${name} skill registration failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-            name,
-            { cause: err },
-          );
-        }
-      }
-
-      // Init runs LAST so the plugin's hook can observe its own tools /
-      // routes / skills already wired into the registries. A throw here
-      // rolls back every contribution above before bootstrap re-throws.
-      if (plugin.hooks?.[HOOKS.INIT]) {
-        try {
-          await plugin.hooks[HOOKS.INIT](initContext);
-        } catch (err) {
-          throw new PluginExecutionError(
-            `plugin ${name} init() failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-            name,
-            { cause: err },
-          );
-        }
-      }
-      // Init succeeded (or no init hook). The catch block reads this to
-      // decide whether `onShutdown` runs during rollback — it should fire
-      // only when there is matching init-side state to tear down, which
-      // first exists between this point and the `activePlugins.push`
-      // below.
-      initCompleted = true;
-
-      activePlugins.push({ plugin, routeHandles });
-
-      log.info({ plugin: name }, "plugin initialized");
+      activePlugins.push(await initializePlugin(plugin, ctx));
     } catch (err) {
-      // Roll back the currently-failing plugin before unwinding earlier
-      // plugins via `teardownPartialInit`. It is not in `activePlugins`
-      // yet (that push happens only after init() succeeds), so the
-      // partial-init walk alone would leave its already-registered
-      // tools/routes/skills live.
-      //
-      // The `initCompleted` branch covers the narrow window where init
-      // succeeded but a step between init's success and
-      // `activePlugins.push` throws — there the plugin has live init-side
-      // state that `onShutdown` is responsible for cleaning up, so the
-      // full rollbackPlugin path (with onShutdown) runs.
-      //
-      // The else branch is the dominant failure mode now that init runs
-      // LAST: contributions may have registered partially but init never
-      // ran, so `onShutdown` must NOT fire (calling it would invoke the
-      // plugin's teardown against an uninitialized self, violating the
-      // lifecycle contract documented on `Plugin.onShutdown`). Tools,
-      // routes, and skills are still unregistered in the order
-      // `teardownPlugin` uses, and the plugin is dropped from the
-      // registry.
-      if (initCompleted) {
-        await rollbackPlugin({ plugin, routeHandles });
-      } else {
-        for (const handle of routeHandles) {
-          unregisterSkillRoute(handle);
-        }
-        unregisterPluginTools(name);
-        if (plugin.skills && plugin.skills.length > 0) {
-          unregisterPluginSkills(name);
-        }
-        unregisterPlugin(name);
-      }
+      unregisterPlugin(name);
       await teardownPartialInit();
       throw err;
     }
@@ -485,6 +322,114 @@ export async function bootstrapPlugins(ctx: DaemonContext): Promise<void> {
 interface ActivePlugin {
   readonly plugin: Plugin;
   readonly routeHandles: readonly SkillRouteHandle[];
+}
+
+async function initializePlugin(
+  plugin: Plugin,
+  ctx: DaemonContext,
+): Promise<ActivePlugin> {
+  const name = plugin.manifest.name;
+  const routeHandles: SkillRouteHandle[] = [];
+  let initCompleted = false;
+
+  try {
+    const credentials: Record<string, string> = {};
+    for (const key of plugin.manifest.requiresCredential ?? []) {
+      credentials[key] = await resolveCredentialOrThrow(name, key);
+    }
+
+    const config = validatePluginConfig(
+      name,
+      plugin.manifest.config,
+      getPluginConfigRaw(ctx.config, name),
+    );
+
+    const initContext = {
+      config,
+      credentials,
+      logger: log.child({ plugin: name }),
+      pluginStorageDir: ensurePluginStorageDir(name),
+      assistantVersion: ctx.assistantVersion,
+    };
+
+    if (plugin.tools && plugin.tools.length > 0) {
+      try {
+        const accepted = registerPluginTools(name, plugin.tools);
+        log.info(
+          { plugin: name, count: accepted.length },
+          "plugin tools registered",
+        );
+      } catch (err) {
+        throw new PluginExecutionError(
+          `plugin ${name} tool registration failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          name,
+          { cause: err },
+        );
+      }
+    }
+
+    if (plugin.routes && plugin.routes.length > 0) {
+      for (const route of plugin.routes) {
+        routeHandles.push(registerSkillRoute(route));
+      }
+      log.info(
+        { plugin: name, count: plugin.routes.length },
+        "plugin routes registered",
+      );
+    }
+
+    if (plugin.skills && plugin.skills.length > 0) {
+      try {
+        registerPluginSkills(
+          name,
+          plugin.skills as readonly PluginSkillRegistration[],
+        );
+      } catch (err) {
+        throw new PluginExecutionError(
+          `plugin ${name} skill registration failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          name,
+          { cause: err },
+        );
+      }
+    }
+
+    if (plugin.hooks?.[HOOKS.INIT]) {
+      try {
+        await plugin.hooks[HOOKS.INIT](initContext);
+      } catch (err) {
+        throw new PluginExecutionError(
+          `plugin ${name} init() failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          name,
+          { cause: err },
+        );
+      }
+    }
+    initCompleted = true;
+
+    log.info({ plugin: name }, "plugin initialized");
+    return { plugin, routeHandles };
+  } catch (err) {
+    if (initCompleted) {
+      await teardownPlugin({ plugin, routeHandles }, "bootstrap-failed", {
+        assistantVersion: ctx.assistantVersion,
+      });
+    } else {
+      for (const handle of routeHandles) {
+        unregisterSkillRoute(handle);
+      }
+      unregisterPluginTools(name);
+      if (plugin.skills && plugin.skills.length > 0) {
+        unregisterPluginSkills(name);
+      }
+    }
+    throw err;
+  }
 }
 
 /**
@@ -556,4 +501,78 @@ async function teardownPlugin(
       );
     }
   }
+}
+
+/** Rebuild a changed external plugin and swap it into the live registry. */
+export async function reregisterExternalPlugin(
+  pluginName: string,
+): Promise<void> {
+  const pluginDir = join(getWorkspaceDir(), "plugins", pluginName);
+  const plugin = await buildExternalPlugin(pluginDir);
+  if (plugin === undefined) return;
+
+  if (plugin.manifest.name !== pluginName) {
+    log.warn(
+      { plugin: pluginName, manifestName: plugin.manifest.name, pluginDir },
+      `external plugin reload skipped: directory name "${pluginName}" does not match manifest.name "${plugin.manifest.name}"`,
+    );
+    return;
+  }
+
+  const ctx: DaemonContext = {
+    config: getConfig(),
+    assistantVersion: APP_VERSION,
+  };
+  const disabledFlag = getDisabledPluginFlag(plugin, ctx.config);
+  if (disabledFlag !== undefined) {
+    log.info(
+      { plugin: pluginName, flag: disabledFlag },
+      `external plugin reload skipped: feature flag ${disabledFlag} is disabled`,
+    );
+    return;
+  }
+
+  const existing = getRegisteredPlugin(pluginName);
+  if (existing === undefined) {
+    try {
+      await initializePlugin(plugin, ctx);
+      setRegisteredPlugin(plugin);
+      log.info({ plugin: pluginName }, "external plugin registered post-boot");
+    } catch (err) {
+      log.error(
+        { err, plugin: pluginName },
+        "external plugin post-boot registration failed",
+      );
+    }
+    return;
+  }
+
+  try {
+    unregisterPluginTools(pluginName);
+  } catch (err) {
+    log.warn(
+      { err, plugin: pluginName },
+      "external plugin reload: tool unregister failed (continuing)",
+    );
+  }
+
+  setRegisteredPlugin(plugin);
+
+  if (plugin.tools && plugin.tools.length > 0) {
+    try {
+      const accepted = registerPluginTools(pluginName, plugin.tools);
+      log.info(
+        { plugin: pluginName, count: accepted.length },
+        "external plugin reloaded",
+      );
+    } catch (err) {
+      log.error(
+        { err, plugin: pluginName },
+        "external plugin reload: tool registration failed",
+      );
+    }
+    return;
+  }
+
+  log.info({ plugin: pluginName }, "external plugin reloaded");
 }

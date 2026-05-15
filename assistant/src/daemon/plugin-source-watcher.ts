@@ -4,7 +4,7 @@
  * Watches `<workspaceDir>/plugins/` recursively using fs.watch (FSEvents on
  * macOS). When a plugin directory is created or modified, debounces per
  * top-level directory name (= the plugin name) and dispatches to the
- * watcher's internal change handler so the daemon can install + initialize
+ * watcher's internal change handler so the daemon can register or reload
  * the plugin without a restart.
  *
  * Mirrors `app-source-watcher.ts` (same DebouncerMap shape, same start/stop
@@ -12,22 +12,18 @@
  * through a static singleton so tool side-effects can call
  * `PluginSourceWatcher.getInstance().ensureStarted()` directly without an
  * intermediate module-level injection.
- *
- * The post-boot install path (i.e. how `onChange` actually re-enters
- * `installPluginPostBoot`) lands in a follow-up PR. For now `onChange`
- * is a logging stub so the watcher infrastructure can be wired and
- * exercised end-to-end at the fs-event boundary.
  */
 
-import { existsSync, type FSWatcher, watch } from "node:fs";
+import { type FSWatcher, mkdirSync, watch } from "node:fs";
 
 import { DebouncerMap } from "../util/debounce.js";
 import { getLogger } from "../util/logger.js";
 import { getWorkspacePluginsDir } from "../util/platform.js";
+import { reregisterExternalPlugin } from "./external-plugins-bootstrap.js";
 
 const log = getLogger("plugin-source-watcher");
 
-const PLUGIN_INSTALL_DEBOUNCE_MS = 500;
+const PLUGIN_SOURCE_DEBOUNCE_MS = 500;
 
 /**
  * Extract the plugin's top-level directory name from a relative path within
@@ -71,7 +67,7 @@ export class PluginSourceWatcher {
   private watcher: FSWatcher | null = null;
   private started = false;
   private debouncer = new DebouncerMap({
-    defaultDelayMs: PLUGIN_INSTALL_DEBOUNCE_MS,
+    defaultDelayMs: PLUGIN_SOURCE_DEBOUNCE_MS,
     maxEntries: 50,
   });
 
@@ -99,17 +95,8 @@ export class PluginSourceWatcher {
     }
   }
 
-  /**
-   * Stubbed change handler — logs the detected plugin change so the
-   * watcher's reach can be verified in dev. The daemon-side install path
-   * (build manifest → re-open registration → `installPluginPostBoot`)
-   * lands in a follow-up PR.
-   */
-  private onChange(pluginName: string): void {
-    log.info(
-      { plugin: pluginName },
-      "plugin source change detected (install path lands in follow-up PR)",
-    );
+  private onChange(pluginName: string): Promise<void> {
+    return reregisterExternalPlugin(pluginName);
   }
 
   private tryWatch(): void {
@@ -125,9 +112,12 @@ export class PluginSourceWatcher {
       return;
     }
 
-    if (!existsSync(pluginsDir)) {
-      log.info(
-        "Plugins directory does not exist yet; skipping source watcher",
+    try {
+      mkdirSync(pluginsDir, { recursive: true });
+    } catch (err) {
+      log.warn(
+        { err, pluginsDir },
+        "Could not create plugins directory; source watching disabled",
       );
       return;
     }
@@ -141,7 +131,7 @@ export class PluginSourceWatcher {
           const pluginName = resolvePluginNameFromRelPath(filename);
           if (!pluginName) return;
           this.debouncer.schedule(`plugin:${pluginName}`, () => {
-            this.onChange(pluginName);
+            void this.onChange(pluginName);
           });
         },
       );
