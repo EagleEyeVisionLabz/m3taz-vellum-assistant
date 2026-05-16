@@ -8742,7 +8742,6 @@ paths:
                             - ollama
                             - fireworks
                             - openrouter
-                            - zai
                             - openai-compatible
                         auth:
                           oneOf:
@@ -8860,9 +8859,7 @@ paths:
           required: false
           schema:
             type: string
-          description:
-            "Filter by provider. One of: anthropic, openai, gemini, ollama, fireworks, openrouter, zai,
-            openai-compatible"
+          description: "Filter by provider. One of: anthropic, openai, gemini, ollama, fireworks, openrouter, openai-compatible"
     post:
       operationId: inference_providerconnections_post
       summary: Create a provider connection
@@ -8889,7 +8886,6 @@ paths:
                       - ollama
                       - fireworks
                       - openrouter
-                      - zai
                       - openai-compatible
                   auth:
                     oneOf:
@@ -9021,7 +9017,6 @@ paths:
                     - ollama
                     - fireworks
                     - openrouter
-                    - zai
                     - openai-compatible
                 auth:
                   oneOf:
@@ -9173,7 +9168,6 @@ paths:
                       - ollama
                       - fireworks
                       - openrouter
-                      - zai
                       - openai-compatible
                   auth:
                     oneOf:
@@ -9319,7 +9313,6 @@ paths:
                       - ollama
                       - fireworks
                       - openrouter
-                      - zai
                       - openai-compatible
                   auth:
                     oneOf:
