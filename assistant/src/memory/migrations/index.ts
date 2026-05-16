@@ -215,6 +215,7 @@ export {
   migrateNormalizeSlackExternalContent,
 } from "./249-normalize-slack-external-content.js";
 export { migrateProviderConnectionBaseUrlAndModels } from "./250-provider-connection-base-url-and-models.js";
+export { downA2ATasks, migrateA2ATasks } from "./251-a2a-tasks.js";
 export {
   MIGRATION_REGISTRY,
   type MigrationRegistryEntry,

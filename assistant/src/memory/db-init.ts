@@ -39,6 +39,7 @@ import {
   createWatchersAndLogsTables,
   migrate230AcpSessionHistory,
   migrate231RepairMemoryGraphEventDates,
+  migrateA2ATasks,
   migrateActivationState,
   migrateActivationStateFkCascade,
   migrateAddConversationInferenceProfile,
@@ -432,6 +433,7 @@ export function initializeDb(): void {
     createOnboardingEventsTable,
     migrateNormalizeSlackExternalContent,
     migrateProviderConnectionBaseUrlAndModels,
+    migrateA2ATasks,
   ];
 
   // Run each migration step, catching and logging individual failures so one
