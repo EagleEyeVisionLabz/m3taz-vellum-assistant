@@ -130,12 +130,78 @@ import { Button } from "@vellum/design-library/components/button";
 import { cn } from "@vellum/design-library/utils/cn";
 ```
 
-The consuming app must include this package's source in its Tailwind source
-scan so that utility classes used here are generated:
+The consuming app must import the design token stylesheet and include this
+package's source in its Tailwind source scan:
 
 ```css
+/* In your app's global CSS (e.g. globals.css) */
+@import "@vellum/design-library/tokens.css";
 @source "../node_modules/@vellum/design-library/src";
 ```
+
+The token stylesheet provides:
+
+- **CSS custom properties** for all three themes (light, dark, velvet)
+- **`@custom-variant dark`** wired to `data-theme="dark"` — enables `dark:`
+  utility prefixes ([Tailwind v4 docs](https://tailwindcss.com/docs/dark-mode#using-a-data-attribute))
+- **`@theme` bridge** registering `--background`, `--foreground`, and
+  `--font-sans` as Tailwind theme variables — generates `bg-background`,
+  `text-foreground`, etc. ([Tailwind v4 docs](https://tailwindcss.com/docs/theme))
+- **`@utility` classes** for typography and button variants
+
+Theme selection is controlled by a `data-theme` attribute on an ancestor element:
+
+```html
+<html data-theme="dark">  <!-- "light" | "dark" | "velvet" -->
+```
+
+## Adding design tokens
+
+Tokens are defined in [`src/tokens.css`](./src/tokens.css). The file has three
+layers that work together — follow this checklist when adding or modifying tokens:
+
+1. **Add the CSS variable** in each theme block (`:root` / `[data-theme="light"]`,
+   `[data-theme="dark"]`, `[data-theme="velvet"]`). All three themes must define
+   every variable so no token falls through to an unintended default.
+
+2. **Bridge to Tailwind (if needed)** — if the new token should generate a
+   standard Tailwind utility class (e.g. `bg-*`, `text-*`, `border-*`), add a
+   corresponding entry in the `@theme inline { }` block at the top of the file.
+   Use the [Tailwind v4 theme variable namespaces](https://tailwindcss.com/docs/theme#theme-variable-namespaces)
+   to pick the right prefix (`--color-*`, `--spacing-*`, etc.).
+   Semantic tokens that are only referenced via `var()` in `@utility` classes or
+   component styles do **not** need a `@theme` entry.
+
+3. **Add `@utility` classes (if needed)** — composite utilities that combine
+   multiple CSS properties (like the `text-title-large` typography classes)
+   should be registered with `@utility` at the bottom of the file.
+
+**Tokens not yet migrated from the platform repo:**
+The platform's `globals.css` includes additional token categories (spacing scale,
+border-radius scale, shadows, color ramps like Moss/Stone/Forest/Amber) that
+have not been brought into the design library yet. These should be added
+incrementally as components that need them are migrated. When adding them, follow
+the same three-step pattern above and keep values in sync with the platform's
+[`appTheme.css`](https://github.com/vellum-ai/vellum-assistant-platform/blob/main/web/src/app/(app)/appTheme.css)
+and [`globals.css`](https://github.com/vellum-ai/vellum-assistant-platform/blob/main/web/src/app/globals.css).
+
+## Storybook
+
+[Storybook](https://storybook.js.org/) provides isolated component development and auto-generated documentation.
+
+```bash
+cd packages/design-library
+bun run storybook          # dev server → http://localhost:6006
+bun run build-storybook    # static build → storybook-static/
+```
+
+Stories are colocated next to their components (`*.stories.tsx`). Autodocs generates prop tables from TypeScript types automatically.
+
+Use the **Theme** toolbar in Storybook to switch between Light, Dark, and Velvet modes. All components re-render with the selected theme's tokens.
+
+### npm publishing
+
+The `"files"` field in `package.json` allowlists `src/` for the npm tarball, which excludes `.storybook/` config and `storybook-static/` build output ([npm docs](https://docs.npmjs.com/cli/v10/configuring-npm/package-json#files)). Colocated `*.stories.tsx` files under `src/` are included in the tarball but are harmless to consumers — this matches the convention used by most design system packages. To exclude stories from the tarball for size optimization, add an `.npmignore` with `**/*.stories.tsx` — tracked in [LUM-1603](https://linear.app/vellum/issue/LUM-1603).
 
 ## Peer dependencies
 
