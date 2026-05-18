@@ -1,4 +1,4 @@
-import { and, count, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import {
   parseExternalContentEnvelope,
@@ -84,6 +84,92 @@ export function listConversations(
     .limit(limit ?? 100)
     .offset(offset);
   return query.all().map(parseConversation);
+}
+
+/**
+ * List conversations matching an exact `source` value, ordered by `createdAt`
+ * descending. The surgical filter for "find every background run produced by
+ * job X" — heartbeat, memory_v2_consolidation, watcher-engine, etc. — since
+ * `source` is the canonical job-class distinguisher across the background
+ * bucket. `conversationType` + `group_id` only narrow to "background vs
+ * scheduled vs standard"; neither identifies which job produced the row.
+ *
+ * Filter is exact (no `LIKE`, no implicit exclusions): the route layer is
+ * responsible for knowing which source constants exist and passing one. The
+ * defensive `source != 'subagent'` carve-out applied by `listConversations`
+ * is deliberately NOT replicated here — a caller asking for an exact source
+ * gets exactly that source.
+ *
+ * @param source        Exact match against `conversations.source`. Pass the
+ *                      canonical constant (e.g. `MEMORY_V2_CONSOLIDATION_SOURCE`).
+ * @param limit         Maximum rows to return (default 20).
+ * @param opts.includeArchived  Include rows with non-null `archivedAt`.
+ *                              Defaults to `true` so callers that want a full
+ *                              run history get one; pass `false` for views
+ *                              that hide archived rows.
+ */
+export function listConversationsBySource(
+  source: string,
+  limit = 20,
+  opts?: { includeArchived?: boolean },
+): ConversationRow[] {
+  const db = getDb();
+  const includeArchived = opts?.includeArchived ?? true;
+  const where = includeArchived
+    ? eq(conversations.source, source)
+    : and(eq(conversations.source, source), isNull(conversations.archivedAt));
+  const rows = db
+    .select()
+    .from(conversations)
+    .where(where)
+    .orderBy(desc(conversations.createdAt))
+    .limit(limit)
+    .all();
+  return rows.map(parseConversation);
+}
+
+/**
+ * Per-conversation aggregate of messages with a specific role. Powers
+ * heartbeat-shaped run endpoints (e.g. `consolidation/runs`) that need a
+ * "did the agent emit any output?" signal stronger than
+ * `conversations.lastMessageAt` — which is bumped by the kickoff user
+ * prompt and so cannot distinguish "agent ran" from "agent dispatched but
+ * crashed before responding".
+ *
+ * Single batched aggregate query (no N+1). Conversations with zero matching
+ * messages are NOT present in the returned map — callers should treat a
+ * missing key as `{ count: 0, lastAt: null }`.
+ *
+ * @param conversationIds  Conversation ids to look up (empty → empty map).
+ * @param role             Message role to count (default `"assistant"`).
+ */
+export function getMessageRoleStatsByConversation(
+  conversationIds: string[],
+  role: string = "assistant",
+): Map<string, { count: number; lastAt: number }> {
+  if (conversationIds.length === 0) return new Map();
+  const db = getDb();
+  const rows = db
+    .select({
+      conversationId: messages.conversationId,
+      count: sql<number>`COUNT(*)`.as("count"),
+      lastAt: sql<number>`MAX(${messages.createdAt})`.as("last_at"),
+    })
+    .from(messages)
+    .where(
+      and(
+        inArray(messages.conversationId, conversationIds),
+        eq(messages.role, role),
+      ),
+    )
+    .groupBy(messages.conversationId)
+    .all();
+  return new Map(
+    rows.map((r) => [
+      r.conversationId,
+      { count: Number(r.count), lastAt: Number(r.lastAt) },
+    ]),
+  );
 }
 
 export function listPinnedConversations(): ConversationRow[] {

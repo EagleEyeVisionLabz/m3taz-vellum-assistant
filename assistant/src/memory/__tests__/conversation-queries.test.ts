@@ -14,7 +14,9 @@ import {
   buildExcerpt,
   buildRecallEvidenceExcerpt,
   countConversations,
+  getMessageRoleStatsByConversation,
   listConversations,
+  listConversationsBySource,
 } from "../conversation-queries.js";
 import { getDb } from "../db-connection.js";
 import { initializeDb } from "../db-init.js";
@@ -259,5 +261,223 @@ describe("listConversations", () => {
     // AND not in the foreground list
     const fgList = listConversations(100, false);
     expect(fgList).toHaveLength(0);
+  });
+});
+
+describe("listConversationsBySource", () => {
+  beforeEach(() => {
+    resetTables();
+  });
+
+  test("returns only conversations whose source matches exactly", () => {
+    createConversation({
+      title: "consol-1",
+      source: "memory_v2_consolidation",
+    });
+    createConversation({
+      title: "consol-2",
+      source: "memory_v2_consolidation",
+    });
+    createConversation({ title: "heartbeat-1", source: "heartbeat" });
+    createConversation({ title: "user-1", source: "user" });
+
+    const results = listConversationsBySource("memory_v2_consolidation");
+
+    expect(results).toHaveLength(2);
+    expect(results.map((r) => r.title).sort()).toEqual([
+      "consol-1",
+      "consol-2",
+    ]);
+  });
+
+  test("orders by createdAt descending", () => {
+    const a = createConversation({
+      title: "a",
+      source: "memory_v2_consolidation",
+    });
+    const b = createConversation({
+      title: "b",
+      source: "memory_v2_consolidation",
+    });
+    const c = createConversation({
+      title: "c",
+      source: "memory_v2_consolidation",
+    });
+    // Force distinct createdAt regardless of ms-clock granularity.
+    rawRun("UPDATE conversations SET created_at = ? WHERE id = ?", 1000, a.id);
+    rawRun("UPDATE conversations SET created_at = ? WHERE id = ?", 3000, b.id);
+    rawRun("UPDATE conversations SET created_at = ? WHERE id = ?", 2000, c.id);
+
+    const results = listConversationsBySource("memory_v2_consolidation");
+
+    expect(results.map((r) => r.id)).toEqual([b.id, c.id, a.id]);
+  });
+
+  test("honors the limit parameter", () => {
+    for (let i = 0; i < 5; i++) {
+      createConversation({
+        title: `consol-${i}`,
+        source: "memory_v2_consolidation",
+      });
+    }
+
+    const results = listConversationsBySource("memory_v2_consolidation", 3);
+
+    expect(results).toHaveLength(3);
+  });
+
+  test("includes archived rows by default", () => {
+    const conv = createConversation({
+      title: "archived",
+      source: "memory_v2_consolidation",
+    });
+    rawRun(
+      "UPDATE conversations SET archived_at = ? WHERE id = ?",
+      Date.now(),
+      conv.id,
+    );
+
+    const results = listConversationsBySource("memory_v2_consolidation");
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.archivedAt).not.toBeNull();
+  });
+
+  test("excludes archived rows when includeArchived is false", () => {
+    const archived = createConversation({
+      title: "archived",
+      source: "memory_v2_consolidation",
+    });
+    createConversation({ title: "live", source: "memory_v2_consolidation" });
+    rawRun(
+      "UPDATE conversations SET archived_at = ? WHERE id = ?",
+      Date.now(),
+      archived.id,
+    );
+
+    const results = listConversationsBySource("memory_v2_consolidation", 20, {
+      includeArchived: false,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.title).toBe("live");
+  });
+
+  test("does not apply the subagent-exclusion that listConversations does", () => {
+    // The defensive `source != 'subagent'` carve-out in listConversations is
+    // a foreground/background bucketing concern. A caller asking for the
+    // exact `subagent` source via this query gets exactly that.
+    createConversation({ title: "sub-1", source: "subagent" });
+
+    const results = listConversationsBySource("subagent");
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.title).toBe("sub-1");
+  });
+});
+
+describe("getMessageRoleStatsByConversation", () => {
+  beforeEach(() => {
+    resetTables();
+  });
+
+  function insertMessage(
+    conversationId: string,
+    role: string,
+    createdAt: number,
+  ): void {
+    rawRun(
+      "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+      `msg-${conversationId}-${role}-${createdAt}`,
+      conversationId,
+      role,
+      "x",
+      createdAt,
+    );
+  }
+
+  test("returns empty map for empty input", () => {
+    const result = getMessageRoleStatsByConversation([]);
+    expect(result.size).toBe(0);
+  });
+
+  test("returns empty map when conversations exist but no matching role", () => {
+    const a = createConversation("a");
+    insertMessage(a.id, "user", 1000);
+
+    const result = getMessageRoleStatsByConversation([a.id], "assistant");
+
+    expect(result.size).toBe(0);
+  });
+
+  test("counts assistant messages and returns max createdAt", () => {
+    const a = createConversation("a");
+    insertMessage(a.id, "user", 1000);
+    insertMessage(a.id, "assistant", 1500);
+    insertMessage(a.id, "assistant", 2500);
+    insertMessage(a.id, "assistant", 2000);
+
+    const result = getMessageRoleStatsByConversation([a.id], "assistant");
+
+    expect(result.size).toBe(1);
+    expect(result.get(a.id)).toEqual({ count: 3, lastAt: 2500 });
+  });
+
+  test("does not count messages from other roles", () => {
+    const a = createConversation("a");
+    insertMessage(a.id, "user", 1000);
+    insertMessage(a.id, "user", 2000);
+    insertMessage(a.id, "system", 1500);
+    insertMessage(a.id, "assistant", 3000);
+
+    const result = getMessageRoleStatsByConversation([a.id], "assistant");
+
+    expect(result.get(a.id)).toEqual({ count: 1, lastAt: 3000 });
+  });
+
+  test("scopes to the supplied conversation ids", () => {
+    const a = createConversation("a");
+    const b = createConversation("b");
+    insertMessage(a.id, "assistant", 1000);
+    insertMessage(b.id, "assistant", 2000);
+
+    const result = getMessageRoleStatsByConversation([a.id], "assistant");
+
+    expect(result.size).toBe(1);
+    expect(result.has(a.id)).toBe(true);
+    expect(result.has(b.id)).toBe(false);
+  });
+
+  test("aggregates per-conversation across many ids in a single query", () => {
+    const a = createConversation("a");
+    const b = createConversation("b");
+    const c = createConversation("c");
+    insertMessage(a.id, "assistant", 1000);
+    insertMessage(a.id, "assistant", 1500);
+    insertMessage(b.id, "assistant", 2000);
+    // c has no assistant messages → absent from the result.
+
+    const result = getMessageRoleStatsByConversation(
+      [a.id, b.id, c.id],
+      "assistant",
+    );
+
+    expect(result.size).toBe(2);
+    expect(result.get(a.id)).toEqual({ count: 2, lastAt: 1500 });
+    expect(result.get(b.id)).toEqual({ count: 1, lastAt: 2000 });
+    expect(result.has(c.id)).toBe(false);
+  });
+
+  test("role parameter selects the counted role (defaults to assistant)", () => {
+    const a = createConversation("a");
+    insertMessage(a.id, "user", 1000);
+    insertMessage(a.id, "user", 2000);
+    insertMessage(a.id, "assistant", 1500);
+
+    const assistants = getMessageRoleStatsByConversation([a.id]);
+    expect(assistants.get(a.id)).toEqual({ count: 1, lastAt: 1500 });
+
+    const users = getMessageRoleStatsByConversation([a.id], "user");
+    expect(users.get(a.id)).toEqual({ count: 2, lastAt: 2000 });
   });
 });
