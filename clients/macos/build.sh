@@ -516,49 +516,122 @@ install_shared_packages() {
 }
 
 # ---------------------------------------------------------------------------
-# materialize_first_party_symlinks — replace symlinked @vellumai/* entries
-# under a node_modules tree with real copies of the source. Bun resolves
-# `file:` deps to symlinks pointing back into the monorepo, which the .app
-# bundle cannot carry. Mirrors scripts/prepack-bundled-deps.mjs (used by
-# npm publish) but operates at the install root level so it materializes
-# every transitive first-party dep, regardless of whether the containing
-# package declared bundledDependencies (gateway/, for example, has 6 file:
-# deps but no bundledDependencies field).
+# dereference_unsafe_symlinks — given a populated install dir produced by
+# `bun install` against a synthetic root with file: deps, rebuild it into
+# $out_dir with every symlink pointing outside $in_dir replaced by the
+# referent's real content. Bun's file: install creates symlinks at every
+# level (top-level @vellumai/<pkg>/ contents *and* the nested
+# node_modules/* directories that came along for the ride), all pointing
+# back to absolute source paths in the monorepo checkout. The .app bundle
+# cannot carry symlinks pointing outside itself — codesign --verify
+# --strict rejects the bundle with "invalid destination for symbolic link
+# in bundle" if any survive. Internal (relative) symlinks like
+# node_modules/.bin/foo -> ../foo/bin/cli are kept as-is so the runtime
+# behaves like a normal npm install.
+#
+# Only .git/ is excluded universally — every other "dev noise" pattern
+# (dist/, build/, __tests__/, *.test.ts, ...) is legitimate published
+# content for some third-party npm package (e.g. uuid ships its CLI as
+# ../uuid/dist/esm/bin/uuid). First-party dev noise is trimmed in a
+# separate scoped pass via trim_first_party_dev_noise().
 # ---------------------------------------------------------------------------
-materialize_first_party_symlinks() {
-    local nm="$1"
-    [ -d "$nm/@vellumai" ] || return 0
-    local materialized=0
-    for entry in "$nm/@vellumai"/*; do
-        [ -e "$entry" ] || continue
-        [ -L "$entry" ] || continue
-        local target
-        target=$(readlink -f "$entry")
-        [ -d "$target" ] || continue
-        rm "$entry"
-        mkdir -p "$entry"
-        # Copy source, excluding development noise that bloats the .app
-        # without being needed at runtime.
-        rsync -a \
-            --exclude='node_modules/' \
-            --exclude='.git/' \
-            --exclude='.turbo/' \
-            --exclude='dist/' \
-            --exclude='build/' \
-            --exclude='coverage/' \
-            --exclude='__tests__/' \
-            --exclude='*.test.ts' \
-            --exclude='*.test.tsx' \
-            --exclude='*.test.js' \
-            --exclude='*.bench.ts' \
-            --exclude='*.benchmark.test.ts' \
-            --exclude='*.tsbuildinfo' \
-            --exclude='.eslintrc*' \
-            --exclude='.prettierrc*' \
-            "$target/" "$entry/"
-        materialized=$((materialized + 1))
+dereference_unsafe_symlinks() {
+    local in_dir="$1"
+    local out_dir="$2"
+    rsync -a --copy-unsafe-links \
+        --exclude='.git/' \
+        "$in_dir/" "$out_dir/"
+}
+
+# ---------------------------------------------------------------------------
+# trim_first_party_dev_noise — remove dev-only files (tests, build
+# artifacts, lint configs) from inside every first-party @vellumai/<pkg>
+# directory at any depth. Scoped this way (not via rsync excludes) because
+# third-party packages legitimately publish dist/ and build/ as their
+# compiled output, and a global exclude breaks their .bin/<cmd> binstubs
+# (e.g. node_modules/.bin/uuid -> ../uuid/dist/esm/bin/uuid).
+#
+# Each first-party pkg's own node_modules/ subtree is pruned during the
+# trim so third-party deps nested inside it keep their published content
+# (the next layer of @vellumai/* deeper in is handled by its own pass).
+# ---------------------------------------------------------------------------
+trim_first_party_dev_noise() {
+    local root="$1"
+    local scope_dir="$root/node_modules/@vellumai"
+    [ -d "$scope_dir" ] || return 0
+    # Walk each first-party package at the top-level @vellumai scope and
+    # strip dev noise. We do NOT recurse into nested @vellumai scopes
+    # because step 1 below removes them wholesale.
+    local pkg
+    for pkg in "$scope_dir"/*; do
+        [ -d "$pkg" ] || continue
+        # 1. Nuke per-package nested node_modules entirely. bun's file:
+        #    install mirrors the source dir's dev node_modules into each
+        #    first-party pkg; dereferencing copies that whole tree (could
+        #    be hundreds of MB of dev deps). Production transitive deps
+        #    are already hoisted to $root/node_modules/ by
+        #    `bun install --production`, so the per-pkg trees are pure
+        #    dev noise and safe to remove. Removing also wipes any
+        #    deeper nested @vellumai/ scopes in one shot.
+        rm -rf "$pkg/node_modules"
+        # 2. Delete remaining dev-noise directories. (No -prune on
+        #    node_modules needed — it's gone.)
+        find "$pkg" \
+            \( -type d \
+              \( -name '__tests__' \
+              -o -name 'coverage' \
+              -o -name '.turbo' \
+              -o -name 'dist' \
+              -o -name 'build' \) \
+              -prune -exec rm -rf {} + \) 2>/dev/null || true
+        # 3. Delete dev-noise files.
+        find "$pkg" \
+            \( -type f \
+              \( -name '*.test.ts' \
+              -o -name '*.test.tsx' \
+              -o -name '*.test.js' \
+              -o -name '*.bench.ts' \
+              -o -name '*.benchmark.test.ts' \
+              -o -name '*.tsbuildinfo' \
+              -o -name '.eslintrc*' \
+              -o -name '.prettierrc*' \) \
+              -exec rm -f {} + \) 2>/dev/null || true
     done
-    echo "Materialized $materialized first-party @vellumai/* package(s) under $nm"
+}
+
+# ---------------------------------------------------------------------------
+# assert_no_external_symlinks — sanity-check the staged runtime tree to
+# prove every remaining symlink resolves within $root. If any external or
+# broken symlink survives, codesign --verify --strict would reject the
+# bundle later with a generic "invalid destination for symbolic link in
+# bundle" error; fail fast here with the offending link printed so the
+# regression is pinned to the staging step.
+# ---------------------------------------------------------------------------
+assert_no_external_symlinks() {
+    # Canonicalize $root with pwd -P so it matches what `readlink -f` returns
+    # for internal links. Without -P, any symlinked component in the caller's
+    # path (e.g. macOS /var/folders/... or /tmp -> /private/tmp) yields a
+    # logical prefix that never matches physical-resolved targets, false-
+    # flagging every internal link as external.
+    local root
+    root=$(cd "$1" && pwd -P)
+    local stray
+    stray=$(find "$root" -type l 2>/dev/null | while IFS= read -r link; do
+        local target
+        target=$(readlink -f "$link" 2>/dev/null || true)
+        case "$target" in
+            "$root"/*) ;;
+            "") echo "$link -> (broken)"; break;;
+            *) echo "$link -> $target"; break;;
+        esac
+    done)
+    if [ -n "$stray" ]; then
+        echo "ERROR: --no-compile staging contains symlink(s) pointing outside the bundle:" >&2
+        printf '  %s\n' "$stray" >&2
+        echo "       dereference_unsafe_symlinks did not fully resolve file: deps." >&2
+        echo "       Most likely cause: bun install layout changed; re-check dereference_unsafe_symlinks." >&2
+        exit 1
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -567,19 +640,21 @@ materialize_first_party_symlinks() {
 # package.json whose dependencies point at the four entry packages
 # (assistant/cli/gateway/credential-executor) via file: refs, runs
 # `bun install --production` to resolve the full third-party tree plus all
-# transitive first-party deps, then materializes the first-party symlinks
-# into real copies. Result is moved to $out_dir (typically Resources/runtime/).
+# transitive first-party deps, then materializes every symlink bun's
+# file: install left pointing back into the monorepo source. Result is
+# moved to $out_dir (typically Resources/runtime/).
 #
 # Usage: stage_no_compile_runtime <out_dir>
 # ---------------------------------------------------------------------------
 stage_no_compile_runtime() {
     local out_dir="$1"
     local stage_dir="$SCRIPT_DIR/.no-compile-staging"
+    local rebuild_dir="$SCRIPT_DIR/.no-compile-rebuild"
 
     command -v bun &>/dev/null || { echo "ERROR: bun is required for --no-compile staging"; exit 1; }
     command -v rsync &>/dev/null || { echo "ERROR: rsync is required for --no-compile staging"; exit 1; }
 
-    rm -rf "$stage_dir"
+    rm -rf "$stage_dir" "$rebuild_dir"
     mkdir -p "$stage_dir"
 
     # Synthetic root depending on the 4 entry packages via file:. We do NOT
@@ -611,13 +686,28 @@ EOF
         HUSKY=0 \
         bun install --production)
 
-    # Materialize the 4 entry packages plus all transitive first-party deps.
-    materialize_first_party_symlinks "$stage_dir/node_modules"
+    # Dereference every symlink bun's file: install left pointing back into
+    # the monorepo source. The result is a self-contained tree at
+    # $rebuild_dir with no external-pointing symlinks.
+    echo "Dereferencing external symlinks into $rebuild_dir..."
+    mkdir -p "$rebuild_dir"
+    dereference_unsafe_symlinks "$stage_dir" "$rebuild_dir"
+    rm -rf "$stage_dir"
+
+    # Strip dev-only files from each materialized first-party package
+    # (scoped — does not touch third-party packages, which legitimately
+    # publish dist/ and similar as their compiled code).
+    echo "Trimming first-party dev noise from $rebuild_dir..."
+    trim_first_party_dev_noise "$rebuild_dir"
+
+    # Prove the dereference worked before codesign has a chance to choke
+    # on a surviving symlink with its generic error message.
+    assert_no_external_symlinks "$rebuild_dir"
 
     # Move staging into final location atomically.
     rm -rf "$out_dir"
     mkdir -p "$(dirname "$out_dir")"
-    mv "$stage_dir" "$out_dir"
+    mv "$rebuild_dir" "$out_dir"
     echo "No-compile runtime staged at $out_dir ($(du -sh "$out_dir" | cut -f1))"
 }
 
