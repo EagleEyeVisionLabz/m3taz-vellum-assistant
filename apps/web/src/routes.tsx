@@ -1,24 +1,24 @@
-import { createBrowserRouter, Navigate } from "react-router";
+import { createBrowserRouter } from "react-router";
 import { App } from "./App.js";
-import { ConversationNew } from "./pages/conversation-new.js";
-import { ConversationDetail } from "./pages/conversation-detail.js";
-import { Library } from "./pages/library.js";
-import { LibraryDetail } from "./pages/library-detail.js";
-import { NotFound } from "./pages/not-found.js";
-import { SettingsTab } from "./pages/settings-tab.js";
+import { ChatPage } from "./domains/chat/chat-page.js";
+import { LibraryPage } from "./domains/library/library-page.js";
+import { LibraryDetailPage } from "./domains/library/library-detail-page.js";
+import { NotFound } from "./components/not-found.js";
+import { SettingsTabPage } from "./domains/settings/settings-tab-page.js";
 
-export const router = createBrowserRouter([
-  {
-    path: "/",
-    element: <App />,
-    children: [
-      { index: true, element: <Navigate to="/conversations/new" replace /> },
-      { path: "conversations/new", element: <ConversationNew /> },
-      { path: "conversations/:id", element: <ConversationDetail /> },
-      { path: "settings/:tab", element: <SettingsTab /> },
-      { path: "library", element: <Library /> },
-      { path: "library/:slug", element: <LibraryDetail /> },
-      { path: "*", element: <NotFound /> },
-    ],
-  },
-]);
+export const router = createBrowserRouter(
+  [
+    {
+      path: "/",
+      element: <App />,
+      children: [
+        { index: true, element: <ChatPage /> },
+        { path: "settings/:tab", element: <SettingsTabPage /> },
+        { path: "library", element: <LibraryPage /> },
+        { path: "library/:appId", element: <LibraryDetailPage /> },
+        { path: "*", element: <NotFound /> },
+      ],
+    },
+  ],
+  { basename: "/assistant" },
+);
