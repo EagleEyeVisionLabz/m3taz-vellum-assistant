@@ -68,7 +68,8 @@ temp.sh
 context.md
 CLAUDE.md
 !assistant/CLAUDE.md
-.agents
+.agents/*
+!.agents/skills/
 .codex
 .vellum
 
