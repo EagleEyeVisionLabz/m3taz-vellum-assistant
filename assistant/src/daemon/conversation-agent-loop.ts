@@ -27,6 +27,7 @@ import type {
 } from "../channels/types.js";
 import {
   contextWindowConfigFromEffective,
+  type EffectiveContextWindow,
   resolveEffectiveContextWindow,
 } from "../config/llm-context-resolution.js";
 import { resolveCallSiteConfig } from "../config/llm-resolver.js";
@@ -520,12 +521,11 @@ export interface AgentLoopConversationContext {
   /** Per-turn snapshot of channelCapabilities, frozen at message-processing start. */
   currentTurnChannelCapabilities?: ChannelCapabilities;
   /**
-   * Per-turn snapshot of the resolved inference-profile override. Read by
+   * Current inference-profile override for this turn. Read by
    * `createToolExecutor` so `ToolContext.overrideProfile` carries the same
-   * profile the agent loop is sending to the provider. Without this, a tool
-   * that spawns nested subagents (e.g. `subagent_spawn`) cannot recover the
-   * override from a row read because the in-flight subagent's own row never
-   * had `inferenceProfile` set.
+   * profile the agent loop is sending to the provider. Refreshed between
+   * model calls so an explicitly confirmed profile session opened mid-turn
+   * is inherited by later tool executions and nested subagents.
    */
   currentTurnOverrideProfile?: string;
   commandIntent?: { type: string; payload?: string; languageCode?: string };
@@ -690,6 +690,10 @@ export async function runAgentLoopImpl(
   // spawned subagent's background conversation) wins over the row read
   // so the agent loop's own background-skip rule doesn't zero out an
   // explicitly inherited override.
+  const readCurrentOverrideProfile = (): string | undefined =>
+    options?.overrideProfile ??
+    getConversationOverrideProfileFromRow(getConversation(ctx.conversationId));
+
   const turnOverrideProfile =
     options?.overrideProfile ??
     getConversationOverrideProfileFromRow(turnStartConversation);
@@ -700,21 +704,78 @@ export async function runAgentLoopImpl(
     callSite: turnCallSite,
     overrideProfile: turnOverrideProfile ?? undefined,
   });
-  const turnContextWindowConfig = contextWindowConfigFromEffective(
+  let currentEffectiveContextWindow: EffectiveContextWindow =
+    effectiveContextWindow;
+  let currentContextWindowConfig = contextWindowConfigFromEffective(
     resolveCallSiteConfig(turnCallSite, config.llm, {
       overrideProfile: turnOverrideProfile ?? undefined,
     }).contextWindow,
-    effectiveContextWindow,
+    currentEffectiveContextWindow,
   );
-  (
+  const contextWindowManager =
     ctx.contextWindowManager as ContextWindowManager & {
       updateConfig?: (config: ContextWindowConfig) => void;
-    }
-  ).updateConfig?.(turnContextWindowConfig);
+    };
+  contextWindowManager.updateConfig?.(currentContextWindowConfig);
 
-  // Snapshot for `createToolExecutor` to read into `ToolContext.overrideProfile`
-  // — see field doc on `AgentLoopConversationContext` for why the tool needs
-  // it (nested subagent spawns can't recover the override from a row read).
+  let appliedOverrideProfile = turnOverrideProfile;
+  const refreshCurrentProfileState = (): string | undefined => {
+    const currentOverrideProfile = readCurrentOverrideProfile();
+    if (currentOverrideProfile !== appliedOverrideProfile) {
+      currentEffectiveContextWindow = resolveEffectiveContextWindow({
+        llm: config.llm,
+        callSite: turnCallSite,
+        overrideProfile: currentOverrideProfile,
+      });
+      currentContextWindowConfig = contextWindowConfigFromEffective(
+        resolveCallSiteConfig(turnCallSite, config.llm, {
+          overrideProfile: currentOverrideProfile,
+        }).contextWindow,
+        currentEffectiveContextWindow,
+      );
+      contextWindowManager.updateConfig?.(currentContextWindowConfig);
+      appliedOverrideProfile = currentOverrideProfile;
+      rlog.info(
+        { overrideProfile: currentOverrideProfile ?? null },
+        "Turn inference profile changed mid-loop",
+      );
+    }
+    ctx.currentTurnOverrideProfile = currentOverrideProfile;
+    return currentOverrideProfile;
+  };
+  const resolveCurrentOverrideProfile = (): string | undefined =>
+    refreshCurrentProfileState();
+  const resolveCurrentMaxInputTokens = (): number => {
+    refreshCurrentProfileState();
+    return currentEffectiveContextWindow.maxInputTokens;
+  };
+  const resolveCurrentContextWindowConfig = (): ContextWindowConfig => {
+    refreshCurrentProfileState();
+    return currentContextWindowConfig;
+  };
+  const resolveCurrentContextBudget = (): {
+    overflowRecovery: EffectiveContextWindow["overflowRecovery"];
+    providerMaxTokens: number;
+    preflightBudget: number;
+  } => {
+    refreshCurrentProfileState();
+    const overflowRecovery = currentEffectiveContextWindow.overflowRecovery;
+    const providerMaxTokens = currentEffectiveContextWindow.maxInputTokens;
+    const baseSafetyMargin = overflowRecovery.safetyMarginRatio;
+    const messageCount = ctx.messages.length;
+    const safetyMargin =
+      messageCount > 50 ? Math.max(baseSafetyMargin, 0.15) : baseSafetyMargin;
+    return {
+      overflowRecovery,
+      providerMaxTokens,
+      preflightBudget: Math.floor(providerMaxTokens * (1 - safetyMargin)),
+    };
+  };
+
+  // Initial value for `createToolExecutor` to read into
+  // `ToolContext.overrideProfile`. `resolveCurrentOverrideProfile` refreshes
+  // this between model calls so a confirmed profile session opened by a tool
+  // applies to later tool executions and nested subagents in the same turn.
   ctx.currentTurnOverrideProfile = turnOverrideProfile;
 
   // Capture the turn channel context *before* any awaits so a second
@@ -1087,7 +1148,7 @@ export async function runAgentLoopImpl(
       precomputedEstimate: compactCheck.estimatedTokens,
       conversationOriginChannel:
         getConversationOriginChannel(ctx.conversationId) ?? undefined,
-      overrideProfile: turnOverrideProfile ?? null,
+      overrideProfile: resolveCurrentOverrideProfile() ?? null,
     };
     let compacted: Awaited<
       ReturnType<typeof ctx.contextWindowManager.maybeCompact>
@@ -1700,15 +1761,9 @@ export async function runAgentLoopImpl(
     // After runtime injections are applied, estimate the prompt token count
     // and proactively invoke the reducer if already above budget. This avoids
     // a wasted provider round-trip that would just fail with context_too_large.
-    const overflowRecovery = effectiveContextWindow.overflowRecovery;
-    const providerMaxTokens = effectiveContextWindow.maxInputTokens;
-    // Widen safety margin for large conversations where estimation error
-    // compounds across many messages with tool results.
-    const baseSafetyMargin = overflowRecovery.safetyMarginRatio;
-    const messageCount = ctx.messages.length;
-    const safetyMargin =
-      messageCount > 50 ? Math.max(baseSafetyMargin, 0.15) : baseSafetyMargin;
-    const preflightBudget = Math.floor(providerMaxTokens * (1 - safetyMargin));
+    const initialContextBudget = resolveCurrentContextBudget();
+    const overflowRecovery = initialContextBudget.overflowRecovery;
+    const preflightBudget = initialContextBudget.preflightBudget;
     let reducerState: ReducerState | undefined;
 
     const toolTokenBudget = ctx.agentLoop.getToolTokenBudget(runMessages);
@@ -1785,10 +1840,10 @@ export async function runAgentLoopImpl(
         runMessages,
         systemPrompt: ctx.systemPrompt,
         providerName: estimationProviderName,
-        contextWindow: turnContextWindowConfig,
+        contextWindow: resolveCurrentContextWindowConfig(),
         preflightBudget,
         toolTokenBudget,
-        maxAttempts: overflowRecovery.maxAttempts,
+        maxAttempts: resolveCurrentContextBudget().overflowRecovery.maxAttempts,
         abortSignal: abortController.signal,
         compactFn: async (msgs, signal, opts) => {
           // Route the reducer's forced-compaction tier through the
@@ -1818,7 +1873,7 @@ export async function runAgentLoopImpl(
                 signal,
                 options: {
                   ...(opts ?? {}),
-                  overrideProfile: turnOverrideProfile ?? null,
+                  overrideProfile: resolveCurrentOverrideProfile() ?? null,
                 },
               },
               buildPluginTurnContext(ctx, reqId),
@@ -2089,7 +2144,8 @@ export async function runAgentLoopImpl(
       // yield if we're approaching the preflight budget. This lets the
       // conversation-agent-loop run compaction before the provider rejects.
       if (overflowRecovery.enabled) {
-        const midLoopThreshold = preflightBudget * 0.85;
+        const midLoopThreshold =
+          resolveCurrentContextBudget().preflightBudget * 0.85;
         const estimated = await runTokenEstimatePipeline(checkpoint.history);
         if (estimated > midLoopThreshold) {
           rlog.warn(
@@ -2125,7 +2181,9 @@ export async function runAgentLoopImpl(
       turnCallSite,
       loopTurnCtx,
       turnOverrideProfile,
-      effectiveContextWindow.maxInputTokens,
+      resolveCurrentMaxInputTokens(),
+      resolveCurrentOverrideProfile,
+      resolveCurrentMaxInputTokens,
     );
 
     rlog.info(
@@ -2142,7 +2200,8 @@ export async function runAgentLoopImpl(
     let midLoopCompactAttempts = 0;
     while (
       yieldedForBudget &&
-      midLoopCompactAttempts < overflowRecovery.maxAttempts &&
+      midLoopCompactAttempts <
+        resolveCurrentContextBudget().overflowRecovery.maxAttempts &&
       !state.contextTooLargeDetected &&
       !abortController.signal.aborted
     ) {
@@ -2189,10 +2248,11 @@ export async function runAgentLoopImpl(
             options: {
               lastCompactedAt: ctx.contextCompactedAt ?? undefined,
               force: true,
-              targetInputTokensOverride: preflightBudget,
+              targetInputTokensOverride:
+                resolveCurrentContextBudget().preflightBudget,
               conversationOriginChannel:
                 getConversationOriginChannel(ctx.conversationId) ?? undefined,
-              overrideProfile: turnOverrideProfile ?? null,
+              overrideProfile: resolveCurrentOverrideProfile() ?? null,
             },
           },
           buildPluginTurnContext(ctx, reqId),
@@ -2278,7 +2338,9 @@ export async function runAgentLoopImpl(
         turnCallSite,
         loopTurnCtx,
         turnOverrideProfile,
-        effectiveContextWindow.maxInputTokens,
+        resolveCurrentMaxInputTokens(),
+        resolveCurrentOverrideProfile,
+        resolveCurrentMaxInputTokens,
       );
     }
 
@@ -2292,7 +2354,8 @@ export async function runAgentLoopImpl(
         {
           phase: "mid-loop-compact",
           midLoopCompactAttempts,
-          maxAttempts: overflowRecovery.maxAttempts,
+          maxAttempts:
+            resolveCurrentContextBudget().overflowRecovery.maxAttempts,
         },
         "Mid-loop compaction exhausted all attempts — escalating to convergence loop",
       );
@@ -2335,7 +2398,9 @@ export async function runAgentLoopImpl(
         turnCallSite,
         loopTurnCtx,
         turnOverrideProfile,
-        effectiveContextWindow.maxInputTokens,
+        resolveCurrentMaxInputTokens(),
+        resolveCurrentOverrideProfile,
+        resolveCurrentMaxInputTokens,
       );
 
       if (state.orderingErrorDetected) {
@@ -2404,7 +2469,9 @@ export async function runAgentLoopImpl(
         turnCallSite,
         loopTurnCtx,
         turnOverrideProfile,
-        effectiveContextWindow.maxInputTokens,
+        resolveCurrentMaxInputTokens(),
+        resolveCurrentOverrideProfile,
+        resolveCurrentMaxInputTokens,
       );
       if (state.imageTooLargeDetected) {
         rlog.error(
@@ -2475,18 +2542,21 @@ export async function runAgentLoopImpl(
           toolTokenBudget,
         },
       );
-      let correctedTarget = preflightBudget;
+      const convergenceBudget = resolveCurrentContextBudget();
+      let correctedTarget = convergenceBudget.preflightBudget;
       if (actualTokens && estimatedTokensAtOverflow > 0) {
         const estimationErrorRatio = actualTokens / estimatedTokensAtOverflow;
         if (estimationErrorRatio > 1.0) {
-          correctedTarget = Math.floor(preflightBudget / estimationErrorRatio);
+          correctedTarget = Math.floor(
+            convergenceBudget.preflightBudget / estimationErrorRatio,
+          );
           rlog.warn(
             {
               phase: "convergence",
               actualTokens,
               estimatedTokens: estimatedTokensAtOverflow,
               estimationErrorRatio: estimationErrorRatio.toFixed(2),
-              preflightBudget,
+              preflightBudget: convergenceBudget.preflightBudget,
               correctedTarget,
             },
             "Adjusting compaction target based on observed estimation error",
@@ -2511,11 +2581,11 @@ export async function runAgentLoopImpl(
             systemPrompt: ctx.systemPrompt,
             tools: undefined,
             compaction: emergencyConfig,
-            maxInputTokens: effectiveContextWindow.maxInputTokens,
+            maxInputTokens: resolveCurrentMaxInputTokens(),
             previousEstimatedInputTokens: estimatedTokensAtOverflow,
             force: true,
             signal: abortController.signal,
-            overrideProfile: turnOverrideProfile ?? null,
+            overrideProfile: resolveCurrentOverrideProfile() ?? null,
             nonPersistedPrefixCount:
               ctx.contextWindowManager.nonPersistedPrefixCount,
           });
@@ -2553,7 +2623,7 @@ export async function runAgentLoopImpl(
       }
 
       let convergenceAttempts = 0;
-      const maxAttempts = overflowRecovery.maxAttempts;
+      const maxAttempts = convergenceBudget.overflowRecovery.maxAttempts;
 
       while (
         state.contextTooLargeDetected &&
@@ -2582,7 +2652,7 @@ export async function runAgentLoopImpl(
           {
             providerName: estimationProviderName,
             systemPrompt: ctx.systemPrompt,
-            contextWindow: turnContextWindowConfig,
+            contextWindow: resolveCurrentContextWindowConfig(),
             targetTokens: correctedTarget,
             toolTokenBudget,
           },
@@ -2590,7 +2660,7 @@ export async function runAgentLoopImpl(
           (msgs, signal, opts) =>
             ctx.contextWindowManager.maybeCompact(msgs, signal!, {
               ...(opts ?? {}),
-              overrideProfile: turnOverrideProfile ?? null,
+              overrideProfile: resolveCurrentOverrideProfile() ?? null,
             }),
           abortController.signal,
         );
@@ -2666,7 +2736,9 @@ export async function runAgentLoopImpl(
           turnCallSite,
           loopTurnCtx,
           turnOverrideProfile,
-          effectiveContextWindow.maxInputTokens,
+          resolveCurrentMaxInputTokens(),
+          resolveCurrentOverrideProfile,
+          resolveCurrentMaxInputTokens,
         );
 
         // If the rerun still yields at checkpoint, the turn is still
@@ -2744,7 +2816,7 @@ export async function runAgentLoopImpl(
                   force: true,
                   minKeepRecentUserTurns: 0,
                   targetInputTokensOverride: correctedTarget,
-                  overrideProfile: turnOverrideProfile ?? null,
+                  overrideProfile: resolveCurrentOverrideProfile() ?? null,
                 },
               },
               buildPluginTurnContext(ctx, reqId),
@@ -2827,7 +2899,9 @@ export async function runAgentLoopImpl(
             turnCallSite,
             loopTurnCtx,
             turnOverrideProfile,
-            effectiveContextWindow.maxInputTokens,
+            resolveCurrentMaxInputTokens(),
+            resolveCurrentOverrideProfile,
+            resolveCurrentMaxInputTokens,
           );
         }
         // action === "fail_gracefully" falls through to the final error below
@@ -3037,11 +3111,11 @@ export async function runAgentLoopImpl(
       state.exchangeLlmCallCount,
       {
         tokens: state.lastCallInputTokens,
-        maxTokens: effectiveContextWindow.maxInputTokens,
+        maxTokens: resolveCurrentMaxInputTokens(),
       },
       {
         callSite: turnCallSite,
-        overrideProfile: turnOverrideProfile ?? null,
+        overrideProfile: resolveCurrentOverrideProfile() ?? null,
       },
     );
 
