@@ -27,6 +27,9 @@ Storybook runs on port 6006 by default. If that port is in use, it will prompt f
 
 The design library supports three themes: **Light**, **Dark**, and **Velvet**. The theme switcher is in the Storybook toolbar (paintbrush icon with theme name).
 
+**Important:** Test theme switching in BOTH canvas mode AND docs mode — they use different rendering pipelines.
+
+#### Canvas Mode
 1. Navigate to `http://localhost:6006/?path=/story/components-button--primary`
 2. Click the theme dropdown in the toolbar
 3. Switch between Light → Dark → Velvet
@@ -34,6 +37,19 @@ The design library supports three themes: **Light**, **Dark**, and **Velvet**. T
    - **Light**: Button bg is dark `rgb(23, 25, 28)`, canvas is light `rgb(246, 245, 244)`
    - **Dark**: Button bg inverts to white `rgb(253, 253, 252)`, canvas is dark
    - **Velvet**: Button bg is red/pink `rgb(232, 63, 91)`, canvas is very dark `rgb(18, 18, 20)`
+
+#### Docs Mode
+1. Navigate to `http://localhost:6006/?path=/docs/components-button--docs`
+2. Click the theme dropdown in the toolbar
+3. Switch between Light → Dark → Velvet
+4. Verify:
+   - **Docs page background** changes (not just the story preview area)
+   - **Heading text** ("button") switches between dark/light
+   - **Prop table** text, labels, and borders are all readable against the background
+   - **Story preview boxes** within docs also update
+5. Verify on a second component (e.g., Notice docs) to confirm cross-component theming
+
+Docs mode theming is handled by a custom `ThemedDocsContainer` in `.storybook/preview.tsx` that maps the theme global to a Storybook theme object, which cascades via ThemeProvider to all emotion-styled docs elements.
 
 ### Verifying CSS Token Values
 
@@ -110,16 +126,21 @@ cat packages/design-library/node_modules/storybook/package.json | grep '"version
 ## Architecture Notes
 
 - Tokens live in `src/tokens.css` — single source of truth for all three themes
-- Theme switching works via `data-theme` attribute on document root (set by Storybook decorator in `.storybook/preview.ts`)
+- Theme switching works via `data-theme` attribute on document root (set by Storybook decorator in `.storybook/preview.tsx`)
 - CSS selectors: `:root` (light), `[data-theme="dark"]`, `[data-theme="velvet"]`
 - The `@custom-variant dark` directive wires Tailwind's `dark:` prefix to `data-theme="dark"`
 - The `@theme inline` block bridges CSS variables to Tailwind utility classes
+- **Docs mode uses two theming systems in parallel:**
+  1. CSS variables via `data-theme` attribute — for component styling (buttons, notices, etc.)
+  2. Storybook's ThemeProvider via `ThemedDocsContainer` — for docs chrome (wrapper bg, text, prop tables, code blocks)
+  Both must be in sync for docs mode to look correct.
 
 ## Common Issues
 
 - **Port conflict**: Storybook may prompt to use a different port if 6006 is occupied. Accept or `lsof -ti:6006 | xargs kill` first.
 - **Styles not loading**: If components appear unstyled, verify `src/tokens.css` is imported in `.storybook/preview.css` and that `@tailwindcss/vite` is configured in `.storybook/main.ts`.
-- **Theme not switching**: Check that the decorator in `preview.ts` sets `data-theme` on both `document.documentElement` and `document.body`.
+- **Theme not switching**: Check that the decorator in `preview.tsx` sets `data-theme` on both `document.documentElement` and `document.body`.
+- **Docs background stuck on white**: If docs page background stays white when switching to dark/velvet, the `ThemedDocsContainer` in `preview.tsx` may not be correctly reading the theme global or mapping it to a Storybook theme. Check `parameters.docs.container` is set.
 - **Drag not working**: Native mouse drag does not cross iframe boundaries. Use the dispatched PointerEvent approach above.
 - **Story file errors after merge**: If Storybook shows ENOENT errors for story files, the working tree may be out of sync. Run `git pull` and restart Storybook.
 
