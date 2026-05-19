@@ -80,7 +80,7 @@ top-level folder for domain modules is called **`domains/`**.
 src/
   domains/                         # business domain modules
     messages/                      # message lifecycle
-      use-message-store.ts
+      message-store.ts
       use-send-message.ts
       message-handlers.ts
       message-handlers.test.ts
@@ -88,13 +88,13 @@ src/
       components/
         chat-body.tsx
     conversations/                 # conversation CRUD, grouping, selection
-      use-conversation-store.ts
+      conversation-store.ts
       use-conversation-loader.ts
       conversation-reducer.ts
       conversation-reducer.test.ts
       types.ts
     streaming/                     # SSE transport, event parsing
-      use-stream-store.ts
+      stream-store.ts
       stream-transport.ts
       event-parser.ts
       event-types.ts
@@ -103,7 +103,7 @@ src/
         interaction-handlers.ts
         types.ts
     interactions/                   # user-facing prompts
-      use-interaction-store.ts
+      interaction-store.ts
       interaction-state-machine.ts
       interaction-state-machine.test.ts
       types.ts
@@ -234,31 +234,97 @@ References:
 ### Zustand store conventions
 
 Each domain owns its store, colocated within the domain folder:
-`domains/messages/use-message-store.ts`. File naming follows hook
-convention since stores are accessed as hooks: `use-{domain}-store.ts`.
+`domains/messages/message-store.ts`. Store files use
+`{domain}-store.ts`. Zustand stores are module-level singletons with
+both React hook and non-React APIs (`.getState()`, `.setState()`,
+`.subscribe()`), so the file describes what the module *is* (a store),
+while the exported hook uses the `use` prefix per React's
+[Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks).
 
-Store creation pattern:
+References:
+- [Zustand — TypeScript guide](https://zustand.docs.pmnd.rs/guides/typescript)
+- [Bulletproof React — project structure](https://github.com/alan2207/bulletproof-react/blob/master/docs/project-structure.md)
+
+Store creation pattern — separate `State` and `Actions` interfaces
+so consumers can subscribe to only the slice they need:
 
 ```ts
 import { create } from "zustand";
+import { useShallow } from "zustand/shallow";
 import { messageReducer } from "./message-reducer.js";
-import type { MessageState, MessageAction } from "./types.js";
+import type { MessageAction } from "./types.js";
 
-interface MessageStore extends MessageState {
+// State — the data
+export interface MessageState {
+  messages: Message[];
+  activeThreadId: string | null;
+}
+
+// Actions — stable function refs
+export interface MessageActions {
   dispatch: (action: MessageAction) => void;
 }
 
-export const useMessageStore = create<MessageStore>((set) => ({
+// Combined store type
+export type MessageStore = MessageState & MessageActions;
+
+export const useMessageStore = create<MessageStore>()((set) => ({
   messages: [],
-  // ... initial state
+  activeThreadId: null,
   dispatch: (action) => set((state) => messageReducer(state, action)),
 }));
+
+// Convenience hooks for common access patterns
+export function useMessageState(): MessageState {
+  return useMessageStore(
+    useShallow((s) => ({
+      messages: s.messages,
+      activeThreadId: s.activeThreadId,
+    })),
+  );
+}
+
+export function useMessageActions(): MessageActions {
+  return useMessageStore(
+    useShallow((s) => ({ dispatch: s.dispatch })),
+  );
+}
 ```
 
 Keep store definitions in their domain folder — adding or removing a
 domain means adding or removing a folder.
 
 Reference: [Zustand — TypeScript guide](https://zustand.docs.pmnd.rs/guides/typescript)
+
+### Selector patterns and `useShallow`
+
+Selectors control re-render granularity. Choose the right pattern based
+on what the selector returns:
+
+```ts
+// 1. Primitive selector — no useShallow needed
+const assistantId = useChatStore((s) => s.assistantId);
+
+// 2. Object/array slice — useShallow required (new reference each call)
+const { messages, assistantId } = useChatStore(
+  useShallow((s) => ({ messages: s.messages, assistantId: s.assistantId })),
+);
+
+// 3. Derived/transformed state — useShallow doesn't help, use useMemo
+const unread = useChatStore((s) => s.messages.filter((m) => !m.read));
+// ⚠️ returns new array each time — wrap consumer in useMemo or use
+// a custom equality function via createWithEqualityFn.
+```
+
+Rule of thumb: if the selector returns a **primitive** (`string`,
+`number`, `boolean`, `null`), use it directly. If it returns a **new
+object or array**, wrap with `useShallow`. If it **derives/transforms**
+data, consider `useMemo` in the consumer or a stable selector defined
+outside the component.
+
+References:
+- [Zustand — Prevent rerenders with useShallow](https://zustand.docs.pmnd.rs/guides/prevent-rerenders-with-use-shallow)
+- [Zustand v5 selector best practices (community discussion)](https://github.com/pmndrs/zustand/discussions/2867)
 
 ### useReducer for related state within a component
 
@@ -576,6 +642,12 @@ If bypassing, add a comment explaining why.
   `client.post`), not `globalThis.fetch`. This catches request-building
   bugs that fetch-level mocks miss.
 - **Run tests:** `bun test src/path/to/file.test.ts`
+- **Test Zustand stores via their non-React API.** Use `.getState()`
+  and `.setState()` directly — no React rendering needed. Reset the
+  store in `beforeEach` with `useStore.setState(initialState, true)`
+  (the `true` flag replaces the entire state instead of merging).
+
+  Reference: [Zustand — Testing](https://zustand.docs.pmnd.rs/guides/testing)
 
 ---
 
