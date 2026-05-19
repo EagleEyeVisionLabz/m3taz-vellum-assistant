@@ -4,10 +4,10 @@ import {
   type AnchorHTMLAttributes,
   Children,
   isValidElement,
-  type MouseEvent,
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -15,11 +15,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
-import {
-  openMarkdownOAuthLinkInPopup,
-  shouldOpenMarkdownLinkInOAuthPopup,
-} from "@/domains/chat/lib/oauth-popup-links.js";
-import { cn } from "@vellum/design-library";
+import { cn } from "../utils/cn.js";
 
 const MAX_CODE_BLOCK_HEIGHT = 400;
 
@@ -142,27 +138,15 @@ function CodeBlockWrapper({ children }: { children: ReactNode }) {
   );
 }
 
-function handleMarkdownLinkClick(
-  event: MouseEvent<HTMLAnchorElement>,
-  href: string | undefined,
-): void {
-  if (openMarkdownOAuthLinkInPopup(href)) {
-    event.preventDefault();
-  }
-}
-
-function MarkdownLink({
+function DefaultLink({
   href,
   children,
 }: Pick<AnchorHTMLAttributes<HTMLAnchorElement>, "href" | "children">) {
-  const opensOAuthPopup = shouldOpenMarkdownLinkInOAuthPopup(href);
-
   return (
     <a
       href={href}
       target="_blank"
-      rel={opensOAuthPopup ? undefined : "noopener noreferrer"}
-      onClick={(event) => handleMarkdownLinkClick(event, href)}
+      rel="noopener noreferrer"
       className="text-forest-600 underline hover:text-forest-700 dark:text-forest-400 dark:hover:text-forest-300"
     >
       {children}
@@ -170,100 +154,107 @@ function MarkdownLink({
   );
 }
 
-const markdownComponents: Components = {
-  p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-  // Markdown headings keep the canonical scale sizes but restore bold weight
-  // via `!font-bold` (the scale variants bake font-weight:500 into the utility,
-  // so a plain `font-bold` loses to the custom rule; `!important` wins).
-  h1: ({ children }) => (
-    // typography: off-scale — bold weight override on canonical size
-     
-    <h1 className="mb-2 mt-3 text-title-medium !font-bold first:mt-0">{children}</h1>
-  ),
-  h2: ({ children }) => (
-    // typography: off-scale — bold weight override on canonical size
-     
-    <h2 className="mb-2 mt-3 text-title-small !font-bold first:mt-0">{children}</h2>
-  ),
-  h3: ({ children }) => (
-    // typography: off-scale — bold weight override on canonical size
-     
-    <h3 className="mb-1 mt-2 text-body-medium-default !font-bold first:mt-0">{children}</h3>
-  ),
-  ul: ({ children }) => (
-    <ul className="mb-2 list-disc pl-5 last:mb-0">{children}</ul>
-  ),
-  ol: ({ children }) => (
-    <ol className="mb-2 list-decimal pl-5 last:mb-0">{children}</ol>
-  ),
-  li: ({ children }) => <li className="mb-0.5">{children}</li>,
-  a: ({ href, children }) => <MarkdownLink href={href}>{children}</MarkdownLink>,
-  code: ({ className, children, ...props }) => {
-    const isBlock = className?.startsWith("language-");
-    if (isBlock) {
+export type MarkdownLinkComponent = (
+  props: Pick<AnchorHTMLAttributes<HTMLAnchorElement>, "href" | "children">,
+) => ReactNode;
+
+function buildMarkdownComponents(
+  LinkComponent: MarkdownLinkComponent,
+): Components {
+  return {
+    p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+    // Markdown headings keep the canonical scale sizes but restore bold weight
+    // via `!font-bold` (the scale variants bake font-weight:500 into the utility,
+    // so a plain `font-bold` loses to the custom rule; `!important` wins).
+    h1: ({ children }) => (
+      // typography: off-scale — bold weight override on canonical size
+       
+      <h1 className="mb-2 mt-3 text-title-medium !font-bold first:mt-0">{children}</h1>
+    ),
+    h2: ({ children }) => (
+      // typography: off-scale — bold weight override on canonical size
+       
+      <h2 className="mb-2 mt-3 text-title-small !font-bold first:mt-0">{children}</h2>
+    ),
+    h3: ({ children }) => (
+      // typography: off-scale — bold weight override on canonical size
+       
+      <h3 className="mb-1 mt-2 text-body-medium-default !font-bold first:mt-0">{children}</h3>
+    ),
+    ul: ({ children }) => (
+      <ul className="mb-2 list-disc pl-5 last:mb-0">{children}</ul>
+    ),
+    ol: ({ children }) => (
+      <ol className="mb-2 list-decimal pl-5 last:mb-0">{children}</ol>
+    ),
+    li: ({ children }) => <li className="mb-0.5">{children}</li>,
+    a: ({ href, children }) => <LinkComponent href={href}>{children}</LinkComponent>,
+    code: ({ className, children, ...props }) => {
+      const isBlock = className?.startsWith("language-");
+      if (isBlock) {
+        return (
+          <code
+            className={cn("block overflow-x-auto font-mono text-body-small-default", className)}
+            {...props}
+          >
+            {children}
+          </code>
+        );
+      }
       return (
-        <code
-          className={`block overflow-x-auto font-mono text-body-small-default ${className ?? ""}`}
-          {...props}
-        >
+        <code className="rounded bg-stone-100 px-1 py-0.5 font-mono text-body-small-default dark:bg-moss-800">
           {children}
         </code>
       );
-    }
-    return (
-      <code className="rounded bg-stone-100 px-1 py-0.5 font-mono text-body-small-default dark:bg-moss-800">
+    },
+    pre: ({ children }) => <CodeBlockWrapper>{children}</CodeBlockWrapper>,
+    blockquote: ({ children }) => (
+      <blockquote className="mb-2 border-l-2 border-stone-300 pl-3 italic text-stone-600 last:mb-0 dark:border-stone-600 dark:text-stone-400">
         {children}
-      </code>
-    );
-  },
-  pre: ({ children }) => <CodeBlockWrapper>{children}</CodeBlockWrapper>,
-  blockquote: ({ children }) => (
-    <blockquote className="mb-2 border-l-2 border-stone-300 pl-3 italic text-stone-600 last:mb-0 dark:border-stone-600 dark:text-stone-400">
-      {children}
-    </blockquote>
-  ),
-  table: ({ children }) => (
-    <div className="mb-2 overflow-x-auto last:mb-0">
-      <table className="min-w-full border-collapse text-body-small-default">{children}</table>
-    </div>
-  ),
-  thead: ({ children }) => (
-    <thead className="bg-stone-50 dark:bg-moss-800">{children}</thead>
-  ),
-  th: ({ children }) => (
-     
-    <th className={"border border-stone-200 px-2 py-1 text-left font-semibold dark:border-moss-600" /* typography: off-scale — no canonical variant */}>
-      {children}
-    </th>
-  ),
-  td: ({ children }) => (
-    <td className="border border-stone-200 px-2 py-1 dark:border-moss-600">
-      {children}
-    </td>
-  ),
-  hr: () => (
-    <hr className="my-3 border-stone-200 dark:border-moss-600" />
-  ),
-  img: ({ src, alt }) => {
-    const srcStr = typeof src === "string" ? src : "";
-    const altStr = typeof alt === "string" ? alt : "";
-    // Allow local references (relative paths, data URIs, blob URIs)
-    const isLocal =
-      !srcStr ||
-      srcStr.startsWith("/") ||
-      srcStr.startsWith("data:") ||
-      srcStr.startsWith("blob:") ||
-      srcStr.startsWith(".");
-    if (isLocal) {
-      return <img src={srcStr} alt={altStr} className="my-1 max-w-full rounded" />;
-    }
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-stone-100 px-1.5 py-0.5 text-body-small-default text-stone-500 dark:bg-moss-800 dark:text-stone-400">
-        🔗 External image not rendered ({altStr || srcStr})
-      </span>
-    );
-  },
-};
+      </blockquote>
+    ),
+    table: ({ children }) => (
+      <div className="mb-2 overflow-x-auto last:mb-0">
+        <table className="min-w-full border-collapse text-body-small-default">{children}</table>
+      </div>
+    ),
+    thead: ({ children }) => (
+      <thead className="bg-stone-50 dark:bg-moss-800">{children}</thead>
+    ),
+    th: ({ children }) => (
+       
+      <th className={"border border-stone-200 px-2 py-1 text-left font-semibold dark:border-moss-600" /* typography: off-scale — no canonical variant */}>
+        {children}
+      </th>
+    ),
+    td: ({ children }) => (
+      <td className="border border-stone-200 px-2 py-1 dark:border-moss-600">
+        {children}
+      </td>
+    ),
+    hr: () => (
+      <hr className="my-3 border-stone-200 dark:border-moss-600" />
+    ),
+    img: ({ src, alt }) => {
+      const srcStr = typeof src === "string" ? src : "";
+      const altStr = typeof alt === "string" ? alt : "";
+      const isLocal =
+        !srcStr ||
+        srcStr.startsWith("/") ||
+        srcStr.startsWith("data:") ||
+        srcStr.startsWith("blob:") ||
+        srcStr.startsWith(".");
+      if (isLocal) {
+        return <img src={srcStr} alt={altStr} className="my-1 max-w-full rounded" />;
+      }
+      return (
+        <span className="inline-flex items-center gap-1 rounded bg-stone-100 px-1.5 py-0.5 text-body-small-default text-stone-500 dark:bg-moss-800 dark:text-stone-400">
+          🔗 External image not rendered ({altStr || srcStr})
+        </span>
+      );
+    },
+  };
+}
 
 /**
  * Convert lone newlines to CommonMark hard line breaks (two trailing
@@ -277,18 +268,34 @@ function preserveNewlines(text: string): string {
   return text.replace(/\n+/g, (m) => (m.length === 1 ? "  \n" : m));
 }
 
-interface MarkdownMessageProps {
+export interface MarkdownMessageProps {
   content: string;
   className?: string;
   /** When true, single newlines render as hard line breaks. */
   hardLineBreaks?: boolean;
+  /**
+   * Custom link component for rendering `<a>` elements inside markdown.
+   * Receives `href` and `children` props. Defaults to a plain
+   * `<a target="_blank" rel="noopener noreferrer">`.
+   *
+   * Pass a stable reference (module-level function or `useCallback`) to
+   * avoid rebuilding internal component overrides on every render.
+   */
+  linkComponent?: MarkdownLinkComponent;
 }
 
-export function MarkdownMessage({ content, className, hardLineBreaks }: MarkdownMessageProps) {
+export function MarkdownMessage({
+  content,
+  className,
+  hardLineBreaks,
+  linkComponent,
+}: MarkdownMessageProps) {
   const processed = hardLineBreaks ? preserveNewlines(content) : content;
+  const Link = linkComponent ?? DefaultLink;
+  const components = useMemo(() => buildMarkdownComponents(Link), [Link]);
   return (
-    <div className={cn("text-chat text-[var(--content-default)]", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+    <div data-slot="markdown-message" className={cn("text-chat text-[var(--content-default)]", className)}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {processed}
       </ReactMarkdown>
     </div>

@@ -1,30 +1,25 @@
 /**
- * Tests for MarkdownMessage.
+ * Tests for the design-library MarkdownMessage component.
  *
- * The web workspace does not load a DOM testing library, so we render to
- * static markup via `react-dom/server` and assert on the resulting HTML.
- * This is sufficient to verify that the typography tokens are emitted on
- * the outer wrapper and on heading/table overrides.
+ * Renders to static markup via `react-dom/server` and asserts on the
+ * resulting HTML — no DOM testing library required.
  */
 
 import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { shouldOpenMarkdownLinkInOAuthPopup } from "@/domains/chat/lib/oauth-popup-links.js";
-
-import { MarkdownMessage } from "@/components/markdown-message.js";
+import { MarkdownMessage } from "./markdown-message.js";
 
 describe("MarkdownMessage", () => {
-  test("root wrapper carries the chat typography token", () => {
+  test("root wrapper carries the chat typography token and data-slot", () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownMessage, { content: "**Hi**" }),
     );
 
     expect(html).toContain("text-chat");
-    // Default content color token is applied.
     expect(html).toContain("text-[var(--content-default)]");
-    // The markdown body still renders.
+    expect(html).toContain('data-slot="markdown-message"');
     expect(html).toContain("Hi");
   });
 
@@ -59,20 +54,10 @@ describe("MarkdownMessage", () => {
     );
 
     expect(html).toContain("custom-wrapper-class");
-    // Base tokens are still present.
     expect(html).toContain("text-chat");
   });
 
-  test("detects OAuth authorization links for popup handling", () => {
-    const oauthUrl =
-      "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=client-1&redirect_uri=http%3A%2F%2Flocalhost%3A8000%2Fcallback";
-
-    expect(shouldOpenMarkdownLinkInOAuthPopup(oauthUrl)).toBe(true);
-    expect(shouldOpenMarkdownLinkInOAuthPopup("https://example.com/docs")).toBe(false);
-    expect(shouldOpenMarkdownLinkInOAuthPopup("mailto:support@example.com")).toBe(false);
-  });
-
-  test("keeps normal links isolated with noopener", () => {
+  test("default links include noopener noreferrer", () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownMessage, {
         content: "[Docs](https://example.com/docs)",
@@ -91,11 +76,8 @@ describe("MarkdownMessage", () => {
       }),
     );
 
-    // Single newlines become <br> within a paragraph.
     expect(html).toContain("line1<br/>");
     expect(html).toContain("line3<br/>");
-    // Both pairs stay within their own paragraph.
-    // The two paragraphs are separate <p> elements.
     expect(html).toContain("</p>");
   });
 
@@ -106,22 +88,24 @@ describe("MarkdownMessage", () => {
       }),
     );
 
-    // CommonMark treats single newlines as soft breaks (space).
     expect(html).not.toContain("<br");
     expect(html).toContain("line1");
     expect(html).toContain("line2");
   });
 
-  test("allows OAuth links to keep an opener for popup completion", () => {
-    const oauthUrl =
-      "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=client-1&redirect_uri=http%3A%2F%2Flocalhost%3A8000%2Fcallback";
+  test("custom linkComponent replaces the default link renderer", () => {
+    function CustomLink({ href, children }: { href?: string; children?: React.ReactNode }) {
+      return <a href={href} data-custom="true">{children}</a>;
+    }
+
     const html = renderToStaticMarkup(
       createElement(MarkdownMessage, {
-        content: `[Connect](${oauthUrl})`,
+        content: "[Link](https://example.com)",
+        linkComponent: CustomLink,
       }),
     );
 
-    expect(html).toContain('target="_blank"');
+    expect(html).toContain('data-custom="true"');
     expect(html).not.toContain('rel="noopener noreferrer"');
   });
 });
