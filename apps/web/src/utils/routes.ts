@@ -1,8 +1,10 @@
 /**
  * Centralized URL registry for app-internal navigation.
  *
- * Use these for any in-app `<Link to>`, `navigate()`, `returnTo` default,
- * or pathname matching against canonical app paths.
+ * All paths are absolute browser paths — pass them directly to
+ * `<Link to>`, `navigate()`, `window.location.href`, and pathname
+ * comparisons. No React Router basename is in play; the router runs
+ * at `/` and matches these paths as-is.
  *
  * Captured paths (e.g. inputs to `sanitizeReturnTo`, query-string round-trips)
  * are values, not constants — do NOT rewrite those through this module.
