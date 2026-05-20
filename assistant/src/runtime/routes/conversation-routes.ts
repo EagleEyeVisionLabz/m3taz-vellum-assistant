@@ -34,6 +34,7 @@ import {
 import { getOrCreateConversation as getOrCreateConversationInstance } from "../../daemon/conversation-store.js";
 import { canonicalizeTimeZone } from "../../daemon/date-context.js";
 import {
+  buildScanFirstMessage,
   getCannedFirstGreeting,
   isWakeUpGreeting,
 } from "../../daemon/first-greeting.js";
@@ -1034,6 +1035,8 @@ export function persistOnboardingArtifacts(onboarding: {
   userName?: string;
   assistantName?: string;
   cohort?: string;
+  websiteUrl?: string;
+  contentSourceUrl?: string;
 }): void {
   writeOnboardingSidecar(onboarding);
 
@@ -1112,6 +1115,8 @@ export async function handleSendMessage(
       googleConnected?: boolean;
       googleScopes?: string[];
       cohort?: string;
+      websiteUrl?: string;
+      contentSourceUrl?: string;
     };
   };
 
@@ -1443,12 +1448,30 @@ export async function handleSendMessage(
     );
   }
 
-  // ── Canned first-greeting fast path ──
-  // On a completely fresh workspace, skip LLM inference for the macOS
-  // wake-up greeting and return a pre-written response. When onboarding
-  // context is present the greeting is personalized using the selections;
-  // otherwise a generic greeting is served. Both paths are instant.
-  if (isWakeUpGreeting(trimmedContent, conversation.getMessages().length)) {
+  // ── URL scan path: rewrite first message for scan onboarding ──
+  // When onboarding provides a websiteUrl or contentSourceUrl and the
+  // first message is the macOS wake-up greeting, bypass the canned
+  // greeting and rewrite the user message to a scan instruction so real
+  // LLM inference runs against the URL.
+  const sanitizeUrl = (u?: string) =>
+    u?.trim().replace(/[\r\n\t]/g, "") || undefined;
+  const websiteUrl = sanitizeUrl(body.onboarding?.websiteUrl);
+  const contentSourceUrl = sanitizeUrl(body.onboarding?.contentSourceUrl);
+  const scanUrl = websiteUrl || contentSourceUrl;
+  const isWakeUp = isWakeUpGreeting(
+    trimmedContent,
+    conversation.getMessages().length,
+  );
+  const isScanPath = !!scanUrl && isWakeUp;
+
+  let effectiveContent: string | undefined;
+  if (isScanPath) {
+    const scanVariant = websiteUrl
+      ? ("website" as const)
+      : ("content-source" as const);
+    effectiveContent = buildScanFirstMessage(scanUrl, scanVariant);
+    // Fall through to normal inference path below
+  } else if (isWakeUp) {
     const cannedGreeting = getCannedFirstGreeting(body.onboarding ?? undefined);
 
     conversation.processing = true;
@@ -1572,6 +1595,11 @@ export async function handleSendMessage(
     }
   }
 
+  // When the scan path rewrote the first message, prefer the rewritten
+  // content for all downstream consumers (guardian reply, enqueue, agent
+  // loop) so they see the scan instruction rather than the wake-up greeting.
+  const contentAfterScan = effectiveContent ?? content ?? "";
+
   const attachments = hasAttachments
     ? smDeps.resolveAttachments(attachmentIds)
     : [];
@@ -1591,7 +1619,7 @@ export async function handleSendMessage(
       conversationId: mapping.conversationId,
       sourceChannel,
       sourceInterface,
-      content: content ?? "",
+      content: contentAfterScan,
       attachments,
       conversation,
       onEvent: broadcastMessage,
@@ -1625,7 +1653,7 @@ export async function handleSendMessage(
     // Queue the message so it's processed when the current turn completes
     const requestId = crypto.randomUUID();
     const enqueueResult = conversation.enqueueMessage(
-      content ?? "",
+      contentAfterScan,
       attachments,
       broadcastMessage,
       requestId,
@@ -1744,7 +1772,9 @@ export async function handleSendMessage(
   await conversation.ensureActorScopedHistory();
 
   // Resolve slash commands before persisting or running the agent loop.
-  const rawContent = content ?? "";
+  // `contentAfterScan` already carries the scan-rewritten content when
+  // applicable; reuse it here for consistency.
+  const rawContent = contentAfterScan;
   const slashContext = buildSlashContextForContent(rawContent, {
     conversationId: mapping.conversationId,
     messageCount: conversation.getMessages().length,
