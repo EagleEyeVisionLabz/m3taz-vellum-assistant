@@ -40,6 +40,19 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      # On failure, regenerate the snapshot and print the diff so the
+      # contributor sees exactly what changed (e.g. after rebasing
+      # onto a main that moved files between domains).
+      - name: Audit cross-domain import allow-list freshness
+        run: |
+          if ! bun run audit:cross-domain:check; then
+            echo "::group::regenerated allow-list diff"
+            bun run audit:cross-domain
+            git -c color.ui=never diff -- .cross-domain-allowlist.json | head -200
+            echo "::endgroup::"
+            exit 1
+          fi
+
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
