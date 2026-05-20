@@ -19,8 +19,11 @@
  * Reference: {@link https://zustand.docs.pmnd.rs/}
  */
 
+import * as Sentry from "@sentry/react";
 import { create } from "zustand";
 
+import { openApp, primeAppHtmlCache } from "@/domains/chat/api/apps.js";
+import { fetchDocumentContent } from "@/domains/chat/api/documents.js";
 import { createSelectors } from "@/utils/create-selectors.js";
 
 // ---------------------------------------------------------------------------
@@ -53,6 +56,7 @@ export interface ViewerState {
   mainView: MainView;
   activeAppId: string | null;
   openedAppState: OpenedAppState | null;
+  activeDocumentSurfaceId: string | null;
   openedDocumentState: OpenedDocumentState | null;
   isAppMinimized: boolean;
   intelligenceTab: IntelligenceTab;
@@ -69,6 +73,7 @@ export interface ViewerActions {
 
   // --- App viewer ---
   openApp: (appId: string) => void;
+  loadApp: (assistantId: string, appId: string) => Promise<void>;
   setLoadedApp: (app: OpenedAppState) => void;
   handleAppLoadFailed: () => void;
   closeApp: () => void;
@@ -83,6 +88,7 @@ export interface ViewerActions {
 
   // --- Document viewer ---
   openDocument: () => void;
+  loadDocument: (assistantId: string, documentSurfaceId: string) => Promise<void>;
   setLoadedDocument: (document: OpenedDocumentState) => void;
   handleDocumentLoadFailed: () => void;
   closeDocument: () => void;
@@ -104,6 +110,7 @@ const INITIAL_STATE: ViewerState = {
   mainView: "chat",
   activeAppId: null,
   openedAppState: null,
+  activeDocumentSurfaceId: null,
   openedDocumentState: null,
   isAppMinimized: false,
   intelligenceTab: "identity",
@@ -141,6 +148,26 @@ const useViewerStoreBase = create<ViewerStore>()((set, get) => ({
       openedAppState: null,
       isAppMinimized: false,
     });
+  },
+
+  loadApp: async (assistantId, appId) => {
+    set({
+      mainView: "app",
+      activeAppId: appId,
+      openedAppState: null,
+      isAppMinimized: false,
+    });
+    try {
+      const result = await openApp(assistantId, appId);
+      if (get().activeAppId !== appId) return;
+      const app = { appId: result.appId, dirName: result.dirName, name: result.name, html: result.html };
+      set({ openedAppState: app });
+      primeAppHtmlCache(assistantId, result.appId, result.html);
+    } catch (err) {
+      if (get().activeAppId !== appId) return;
+      Sentry.captureException(err, { tags: { context: "openApp" } });
+      set({ mainView: "chat", activeAppId: null, openedAppState: null });
+    }
   },
 
   setLoadedApp: (app) => {
@@ -227,6 +254,39 @@ const useViewerStoreBase = create<ViewerStore>()((set, get) => ({
     });
   },
 
+  loadDocument: async (assistantId, documentSurfaceId) => {
+    const state = get();
+    const viewBeforeDocument =
+      state.mainView === "document" || state.mainView === "subagent-detail"
+        ? state.viewBeforeDocument
+        : (state.mainView as Exclude<MainView, "document" | "subagent-detail">);
+    set({
+      mainView: "document",
+      activeDocumentSurfaceId: documentSurfaceId,
+      openedDocumentState: null,
+      viewBeforeDocument,
+    });
+    try {
+      const result = await fetchDocumentContent(assistantId, documentSurfaceId);
+      if (get().activeDocumentSurfaceId !== documentSurfaceId) return;
+      if (!result) {
+        set({ mainView: viewBeforeDocument, activeDocumentSurfaceId: null, openedDocumentState: null });
+        return;
+      }
+      set({
+        openedDocumentState: {
+          surfaceId: result.surfaceId,
+          conversationId: result.conversationId,
+          documentName: result.title ?? "Untitled",
+          content: result.content ?? "",
+        },
+      });
+    } catch {
+      if (get().activeDocumentSurfaceId !== documentSurfaceId) return;
+      set({ mainView: viewBeforeDocument, activeDocumentSurfaceId: null, openedDocumentState: null });
+    }
+  },
+
   setLoadedDocument: (document) => {
     set({ openedDocumentState: document });
   },
@@ -234,6 +294,7 @@ const useViewerStoreBase = create<ViewerStore>()((set, get) => ({
   handleDocumentLoadFailed: () => {
     set({
       mainView: get().viewBeforeDocument,
+      activeDocumentSurfaceId: null,
       openedDocumentState: null,
     });
   },
@@ -241,6 +302,7 @@ const useViewerStoreBase = create<ViewerStore>()((set, get) => ({
   closeDocument: () => {
     set({
       mainView: get().viewBeforeDocument,
+      activeDocumentSurfaceId: null,
       openedDocumentState: null,
     });
   },
