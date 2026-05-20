@@ -15,9 +15,11 @@ import { useAuthStore } from "@/stores/auth-store.js";
 import { useAssistantLifecycle } from "@/domains/chat/hooks/use-assistant-lifecycle.js";
 import type { AssistantContextValue } from "@/domains/chat/assistant-context.js";
 
+import { useConversationListStore } from "@/domains/conversations/conversation-list-store.js";
+
 import { OfflineBanner } from "@/components/offline-banner.js";
+import { AssistantSideMenu } from "@/domains/chat/components/assistant-side-menu.js";
 import { ChatLayoutHeader } from "./chat-layout-header.js";
-import { SideMenu } from "./side-menu.js";
 
 /**
  * LocalStorage key used to persist the collapsed state of the sidebar rail
@@ -80,7 +82,7 @@ export function shouldHandleShortcut(
 
 export type SideMenuVariant = "rail" | "overlay";
 
-export interface SideMenuRenderArgs {
+interface SideMenuRenderArgs {
   collapsed: boolean;
   variant: SideMenuVariant;
   onClose?: () => void;
@@ -165,7 +167,7 @@ export function ChatLayout() {
     navigate(1);
   }, [navigate]);
 
-  const isHomeActive = location.pathname === "/home";
+  const isHomeActive = location.pathname === routes.home;
 
   // --- Sidebar collapsed / drawer state ---
   const [collapsed, setCollapsed] = useState<boolean>(readPersistedCollapsed);
@@ -294,9 +296,64 @@ export function ChatLayout() {
     };
   }, [drawerVisible]);
 
+  const conversations = useConversationListStore.use.conversations();
+  const conversationGroups = useConversationListStore.use.conversationGroups();
+  const activeConversationKey = useConversationListStore.use.activeConversationKey();
+  const processingKeys = useConversationListStore.use.processingKeys();
+  const attentionKeys = useConversationListStore.use.attentionKeys();
+  const setActiveKey = useConversationListStore.use.setActiveKey();
+
+  const handleSelectConversation = useCallback(
+    (key: string) => {
+      haptic.light();
+      setActiveKey(key);
+      navigate(routes.assistant);
+      setDrawerOpen(false);
+    },
+    [setActiveKey, navigate],
+  );
+
+  const handleOpenLibrary = useCallback(() => {
+    navigate(routes.library.root);
+  }, [navigate]);
+
+  const isLibraryActive = location.pathname.startsWith("/assistant/library");
+
   const renderSideMenu = useCallback(
-    (args: SideMenuRenderArgs): ReactNode => <SideMenu {...args} />,
-    [],
+    (args: SideMenuRenderArgs): ReactNode => (
+      <AssistantSideMenu
+        assistantId={lifecycle.assistantId ?? ""}
+        collapsed={args.collapsed}
+        variant={args.variant}
+        conversations={conversations}
+        conversationGroups={conversationGroups}
+        activeConversationKey={activeConversationKey ?? undefined}
+        processingConversationKeys={processingKeys}
+        attentionConversationKeys={attentionKeys}
+        onSelectConversation={handleSelectConversation}
+        onStartNewConversation={handleStartNewConversation}
+        isIntelligenceActive={isHomeActive}
+        onOpenIntelligence={handleOpenHome}
+        isLibraryActive={isLibraryActive}
+        onOpenLibrary={handleOpenLibrary}
+        onClose={args.onClose}
+        onSearchClick={args.onSearch}
+      />
+    ),
+    [
+      lifecycle.assistantId,
+      conversations,
+      conversationGroups,
+      activeConversationKey,
+      processingKeys,
+      attentionKeys,
+      handleSelectConversation,
+      handleStartNewConversation,
+      isHomeActive,
+      handleOpenHome,
+      isLibraryActive,
+      handleOpenLibrary,
+    ],
   );
 
   return (
