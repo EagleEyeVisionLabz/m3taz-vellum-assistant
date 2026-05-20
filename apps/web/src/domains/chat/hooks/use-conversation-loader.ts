@@ -1,7 +1,7 @@
 
 import * as Sentry from "@sentry/react";
-import type { ViewSelection } from "@/domains/chat/lib/navigation-history.js";
-import type { MainView } from "@/stores/viewer-store.js";
+import { useViewerStore } from "@/stores/viewer-store.js";
+
 import {
   type Dispatch,
   type MutableRefObject,
@@ -133,12 +133,12 @@ interface UseConversationLoaderParams {
   setSuggestion: Dispatch<SetStateAction<string | null>>;
   setCompactionCircuitOpenUntil: Dispatch<SetStateAction<Date | null>>;
   setInput: Dispatch<SetStateAction<string>>;
-  setMainView: Dispatch<SetStateAction<MainView>>;
+
 
   // Callbacks
   resetChatAttachments: () => void;
   syncNeedsNewBubbleFromMessages: (nextMessages: DisplayMessage[]) => void;
-  navPush: (selection: ViewSelection) => void;
+
   /**
    * Fires after a non-empty saved draft is restored into the composer on a
    * conversation switch. Receives the conversation key the draft belongs to.
@@ -222,10 +222,8 @@ export function useConversationLoader({
   setSuggestion,
   setCompactionCircuitOpenUntil,
   setInput,
-  setMainView,
   resetChatAttachments,
   syncNeedsNewBubbleFromMessages,
-  navPush,
   onDraftRestored,
   shouldSuppressGenericChatErrorNotice,
 }: UseConversationLoaderParams) {
@@ -485,13 +483,13 @@ export function useConversationLoader({
   // -------------------------------------------------------------------------
   const switchConversation = useCallback(
     (key: string) => {
-      setMainView("chat");
+      useViewerStore.getState().setMainView("chat");
       if (key === activeConversationKey) return;
       const params = new URLSearchParams(searchParams.toString());
       params.set("conversationKey", key);
       pushRoute(`?${params.toString()}`);
     },
-    [activeConversationKey, pushRoute, searchParams, setMainView],
+    [activeConversationKey, pushRoute, searchParams],
   );
 
   // -------------------------------------------------------------------------
@@ -500,18 +498,17 @@ export function useConversationLoader({
   const startNewConversation = useCallback(
     ({ silent, initialMessage }: { silent?: boolean; initialMessage?: string } = {}) => {
       if (!silent) haptic.light();
-      setMainView("chat");
+      useViewerStore.getState().setMainView("chat");
       const draftKey = createDraftConversationKey();
       if (initialMessage) {
         pendingInitialMessageRef.current = { conversationKey: draftKey, content: initialMessage };
       }
       useConversationListStore.getState().setActiveKey(draftKey);
-      navPush({ type: "conversation", key: draftKey });
       const params = new URLSearchParams(searchParams.toString());
       params.set("conversationKey", draftKey);
       pushRoute(`?${params.toString()}`);
     },
-    [pushRoute, searchParams, navPush, setMainView, pendingInitialMessageRef],
+    [pushRoute, searchParams, pendingInitialMessageRef],
   );
 
   return {
