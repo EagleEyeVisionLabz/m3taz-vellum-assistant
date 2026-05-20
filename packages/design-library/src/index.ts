@@ -176,10 +176,13 @@ export {
   type SideMenuItemProps,
 } from "./components/side-menu/side-menu.js";
 export {
-  CollapsibleNavSection,
-  type CollapsibleNavSectionRootProps,
-  type CollapsibleNavSectionSectionProps,
-} from "./components/side-menu/collapsible-nav-section.js";
+  Collapsible,
+  type CollapsibleRootProps,
+  type CollapsibleItemProps,
+  type CollapsibleTriggerProps,
+  type CollapsibleContentProps,
+} from "./components/collapsible.js";
+
 export { cn } from "./utils/cn.js";
 export {
   PortalContainerProvider,
