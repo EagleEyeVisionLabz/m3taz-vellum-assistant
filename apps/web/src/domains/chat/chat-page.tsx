@@ -38,7 +38,7 @@ import type { DisplayMessage } from "@/domains/chat/utils/reconcile.js";
 import type { ChatError } from "@/domains/chat/types.js";
 import type { ContextWindowUsage } from "@/domains/chat/components/context-window-indicator.js";
 import type { TranscriptPaginationState } from "@/domains/chat/transcript/types.js";
-import type { PreChatOnboardingContext } from "@/lib/onboarding/prechat.js";
+import type { PreChatOnboardingContext } from "@/domains/onboarding/prechat.js";
 import type { WebSyncRouter } from "@/lib/sync/web-sync-router.js";
 import type { RefreshSettleHandle } from "@/domains/chat/hooks/use-pull-refresh.js";
 import type { SyncChangedEvent } from "@/lib/sync/types.js";
