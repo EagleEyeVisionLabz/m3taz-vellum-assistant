@@ -12,9 +12,14 @@ import { findGuardianForChannel } from "../../../contacts/contact-store.js";
 import type { ServerMessage } from "../../../daemon/message-protocol.js";
 import type { TrustContext } from "../../../daemon/trust-context.js";
 import { updateDeliveredSegmentCount } from "../../../memory/delivery-channels.js";
-import { linkMessage } from "../../../memory/delivery-crud.js";
 import {
+  linkMessage,
+  storeReplyMessageId,
+} from "../../../memory/delivery-crud.js";
+import {
+  markDeliveryDelivered,
   markProcessed,
+  recordDeliveryFailure,
   recordProcessingFailure,
 } from "../../../memory/delivery-status.js";
 import {
@@ -190,8 +195,10 @@ export function processChannelMessageInBackground(
     // rejected as already-processing and our update would erase that
     // in-flight turn's mapping. Snapshot the prior state here and restore
     // it in the `already processing` rejection path below.
-    let priorSlackMapping: { threadTs: string; channelId: string } | null =
-      null;
+    let priorSlackMapping: {
+      threadTs: string;
+      channelId: string;
+    } | null = null;
     let slackMappingMutated = false;
     if (sourceChannel === "slack" && replyCallbackUrl) {
       priorSlackMapping = peekThreadMapping(conversationId);
@@ -219,77 +226,103 @@ export function processChannelMessageInBackground(
                 : {}),
             }
           : undefined;
-      const { messageId: userMessageId } = await processMessage(
-        conversationId,
-        content,
-        attachmentIds,
-        {
-          transport: {
-            channelId: sourceChannel,
-            hints: metadataHints.length > 0 ? metadataHints : undefined,
-            uxBrief: metadataUxBrief,
-            chatType,
+      let replyMessageId: string | undefined;
+      const observeAgentEvent = (msg: ServerMessage): void => {
+        if (
+          msg.type === "message_complete" &&
+          (msg.source === undefined || msg.source === "main") &&
+          typeof msg.messageId === "string"
+        ) {
+          replyMessageId = msg.messageId;
+        }
+        slackThinkingStatus?.observeEvent(msg);
+      };
+
+      let userMessageId: string | undefined;
+      try {
+        const result = await processMessage(
+          conversationId,
+          content,
+          attachmentIds,
+          {
+            transport: {
+              channelId: sourceChannel,
+              hints: metadataHints.length > 0 ? metadataHints : undefined,
+              uxBrief: metadataUxBrief,
+              chatType,
+            },
+            assistantId,
+            trustContext: trustCtx,
+            isInteractive: resolveRoutingState(trustCtx).promptWaitingAllowed,
+            ...(displayContent !== undefined ? { displayContent } : {}),
+            ...(cmdIntent ? { commandIntent: cmdIntent } : {}),
+            ...(slackRuntimeContextNotice ? { slackRuntimeContextNotice } : {}),
+            ...(slackInbound ? { slackInbound } : {}),
+            onEvent: observeAgentEvent,
           },
-          assistantId,
-          trustContext: trustCtx,
-          isInteractive: resolveRoutingState(trustCtx).promptWaitingAllowed,
-          ...(displayContent !== undefined ? { displayContent } : {}),
-          ...(cmdIntent ? { commandIntent: cmdIntent } : {}),
-          ...(slackRuntimeContextNotice ? { slackRuntimeContextNotice } : {}),
-          ...(slackInbound ? { slackInbound } : {}),
-          ...(slackThinkingStatus
-            ? {
-                onEvent: (msg: ServerMessage) =>
-                  slackThinkingStatus.observeEvent(msg),
-              }
-            : {}),
-        },
-        sourceChannel,
-        sourceInterface,
-      );
-      linkMessage(eventId, userMessageId);
-      markProcessed(eventId);
+          sourceChannel,
+          sourceInterface,
+        );
+        userMessageId = result.messageId;
+        linkMessage(eventId, userMessageId);
+        markProcessed(eventId);
+        replyMessageId ??= result.assistantMessageId;
+        if (replyMessageId) {
+          storeReplyMessageId(eventId, replyMessageId);
+        }
+      } catch (err) {
+        // When another turn is already processing this conversation,
+        // `prepareConversationForMessage` throws before any of this turn's
+        // work runs. Our pre-await mapping update would otherwise stomp the
+        // in-flight turn's mapping, causing its outbound persistence to
+        // record `slackMeta` with the wrong (or missing) `threadTs`. Restore
+        // the snapshot so the in-flight turn sees the mapping it installed.
+        if (
+          slackMappingMutated &&
+          err instanceof Error &&
+          err.message.includes("already processing a message")
+        ) {
+          if (priorSlackMapping) {
+            setThreadTs(
+              conversationId,
+              priorSlackMapping.channelId,
+              priorSlackMapping.threadTs,
+            );
+          } else {
+            clearThreadTs(conversationId);
+          }
+        }
+        log.error(
+          { err, conversationId },
+          "Background channel message processing failed",
+        );
+        recordProcessingFailure(eventId, err);
+        return;
+      }
 
       if (replyCallbackUrl) {
-        await deliverReplyViaCallback(
-          conversationId,
-          externalChatId,
-          replyCallbackUrl,
-          assistantId,
-          {
-            sinceMessageId: userMessageId,
-            onSegmentDelivered: (count) =>
-              updateDeliveredSegmentCount(eventId, count),
-          },
-        );
-      }
-    } catch (err) {
-      // When another turn is already processing this conversation,
-      // `prepareConversationForMessage` throws before any of this turn's
-      // work runs. Our pre-await mapping update would otherwise stomp the
-      // in-flight turn's mapping, causing its outbound persistence to
-      // record `slackMeta` with the wrong (or missing) `threadTs`. Restore
-      // the snapshot so the in-flight turn sees the mapping it installed.
-      if (
-        slackMappingMutated &&
-        err instanceof Error &&
-        err.message.includes("already processing a message")
-      ) {
-        if (priorSlackMapping) {
-          setThreadTs(
+        try {
+          await deliverReplyViaCallback(
             conversationId,
-            priorSlackMapping.channelId,
-            priorSlackMapping.threadTs,
+            externalChatId,
+            replyCallbackUrl,
+            assistantId,
+            {
+              messageId: replyMessageId,
+              sinceMessageId: userMessageId,
+              onSegmentDelivered: (count) =>
+                updateDeliveredSegmentCount(eventId, count),
+            },
           );
-        } else {
-          clearThreadTs(conversationId);
+          markDeliveryDelivered(eventId);
+        } catch (err) {
+          log.error(
+            { err, conversationId },
+            "Background channel reply delivery failed",
+          );
+          recordDeliveryFailure(eventId, err);
         }
       }
-      log.error(
-        { err, conversationId },
-        "Background channel message processing failed",
-      );
-      recordProcessingFailure(eventId, err);
     } finally {
       stopTypingHeartbeat?.();
       slackThinkingStatus?.stop();

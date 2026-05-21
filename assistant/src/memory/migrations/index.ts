@@ -222,6 +222,7 @@ export {
   downExternalConversationBindingChatName,
   migrateExternalConversationBindingChatName,
 } from "./254-external-conversation-binding-chat-name.js";
+export { migrateChannelInboundDeliveryAttempts } from "./255-channel-inbound-delivery-attempts.js";
 export {
   MIGRATION_REGISTRY,
   type MigrationRegistryEntry,
