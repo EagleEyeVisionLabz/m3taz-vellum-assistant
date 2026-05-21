@@ -1,14 +1,6 @@
 /**
- * Cross-domain event bus for assistant-global signals (LUM-1812).
- *
- * Provides a typed publish/subscribe surface so components no longer
- * need their own SSE handles, `visibilitychange` listeners, or
- * `navigator.online`/`offline` wiring. Lives in `stores/` as a Zustand
- * store per the
- * [state-management convention](../../docs/STATE_MANAGEMENT.md):
- * shared client-state primitives use Zustand even when, as here, the
- * `state` is private to the store and consumers only ever call the
- * action surface.
+ * Cross-domain typed publish/subscribe surface for assistant-global
+ * signals (SSE events, app lifecycle, network reachability).
  *
  * Pub/sub semantics intentionally do not flow through Zustand
  * reactivity — handlers fire synchronously from `publish()` rather
@@ -17,11 +9,11 @@
  * wrapper exists for codebase consistency and the `.getState()`
  * non-React entry point, not for React reactivity.
  *
- * Bootstrapping the bus to its DOM event sources (visibility, online,
- * offline, Capacitor app-state) is done once at chat-layout scope by
- * `useEventBusInit`. The SSE-event channel is unused in this PR; it
- * lights up alongside the conversation-scoped stream migration that
- * makes a single SSE connection the bus-owned source of truth.
+ * Sources are wired by `useEventBusInit` at chat-layout scope: a
+ * single assistant-scoped SSE connection and DOM lifecycle events
+ * (visibility, online, offline, Capacitor app-state). Consumers
+ * anywhere in the chat-layout subtree subscribe via
+ * `useEventBusStore.getState()`.
  *
  * @see {@link https://zustand.docs.pmnd.rs/}
  */
@@ -57,10 +49,38 @@ export type AppHiddenSignal = "visibility" | "app_state";
 export interface BusEventMap {
   /**
    * Re-broadcast of an SSE event received on the bus-owned
-   * assistant-scoped `/v1/events` connection. Unused in this PR;
-   * see file header.
+   * assistant-scoped `/v1/events` connection. Subscribers narrow on
+   * `payload.type`. Conversation-scoped consumers must filter on
+   * `payload.conversationKey` themselves — the bus delivers every
+   * event the underlying stream sees.
    */
   "sse.event": AssistantEvent;
+  /**
+   * The bus-owned SSE connection just opened (or reopened). Carries the
+   * `cause` of the (re)open so consumers can distinguish a fresh
+   * connection from a transport-error reconnect or a watchdog-driven
+   * recovery. Conversation-scoped consumers use this to schedule a
+   * post-reconnect reconciliation pass.
+   */
+  "sse.opened": {
+    assistantId: string;
+    cause: "fresh" | "error" | "watchdog" | "resume";
+  };
+  /**
+   * The bus-owned SSE connection closed for a non-cancel reason
+   * (network error, etc). Carries a short reason tag for diagnostics.
+   * The bus will attempt to reopen on its own; consumers use this to
+   * recover conversation-scoped turn state (e.g. clear `isStreaming`
+   * flags, kick reachability probes).
+   */
+  "sse.closed": { reason: string };
+  /**
+   * Published by `useEventStream`'s reachability-retry burst limiter
+   * after the reachability probe flips back to "ready". Tells the bus
+   * to close + reopen its SSE connection so the conversation-scoped
+   * reconcile pass can run.
+   */
+  "reachability.retry-requested": Record<string, never>;
   /** Page visible / app foregrounded / network came back online. */
   "app.resume": { signal: AppResumeSignal };
   /** Page hidden / app backgrounded. */

@@ -112,7 +112,6 @@ import {
 
 export function ChatPage() {
   const authLoading = useAuthStore.use.isLoading();
-  const isLoggedIn = useAuthStore.use.isLoggedIn();
   const authUser = useAuthStore.use.user();
   const showLlmInspector = canUseLlmInspector(authUser);
   const isMobile = useIsMobile();
@@ -149,7 +148,6 @@ export function ChatPage() {
   void showAddCreditsModal;
   const [restoredDraftConversationKey, setRestoredDraftConversationKey] = useState<string | null>(null);
   const [refreshEpoch, setRefreshEpoch] = useState(0);
-  const [streamRetryNonce, setStreamRetryNonce] = useState(0);
   const [_autoGreetPending, setAutoGreetPending] = useState(false);
   const awaitingAutoGreetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [contextWindowUsage, setContextWindowUsage] = useState<ContextWindowUsage | null>(null);
@@ -631,7 +629,6 @@ export function ChatPage() {
     confirmationToolCallMapRef,
     setMessages,
     setError,
-    setStreamRetryNonce,
     setInput,
     startReconciliationLoop,
     cancelReconciliation,
@@ -715,14 +712,8 @@ export function ChatPage() {
     reachabilityReset: reachability.reset,
     setMessages,
     setError,
-    streamRetryNonce,
-    setStreamRetryNonce,
-    refreshEpoch,
     syncRouterRef,
     conversationListInvalidatedTimerRef,
-    isLoggedIn,
-    isLoading: authLoading,
-    checkAssistant,
   });
 
   // -------------------------------------------------------------------------
@@ -1320,7 +1311,6 @@ export function ChatPage() {
     pushToAiSettings,
     checkAssistant,
     setRefreshEpoch,
-    streamRetryNonce,
     historyPagination: historyResult.pagination,
     refs: {
       inputRef,
