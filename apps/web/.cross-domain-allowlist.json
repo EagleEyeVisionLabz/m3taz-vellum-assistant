@@ -182,9 +182,6 @@
   "src/domains/intelligence/components/apps/library-view.tsx": [
     "chat"
   ],
-  "src/domains/intelligence/components/apps/vercel-token-dialog.tsx": [
-    "chat"
-  ],
   "src/domains/intelligence/components/constellation-view/constellation-view.tsx": [
     "avatar"
   ],
