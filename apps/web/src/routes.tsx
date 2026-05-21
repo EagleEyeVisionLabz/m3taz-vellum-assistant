@@ -164,7 +164,7 @@ export const router = createBrowserRouter([
         path: "logs",
         element: <LogsLayout />,
         children: [
-          { index: true, element: <TracePage /> },
+          { index: true, element: <UsagePage /> },
           { path: "trace", element: <TracePage /> },
           { path: "usage", element: <UsagePage /> },
           { path: "system-events", element: <SystemEventsPage /> },
