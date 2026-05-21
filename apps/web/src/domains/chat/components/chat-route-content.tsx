@@ -56,6 +56,9 @@ import { ChatAvatar } from "@/components/avatar/chat-avatar.js";
 import { ComposerSettingsMenu } from "@/domains/chat/components/composer-settings-menu.js";
 import { ContextWindowIndicator, type ContextWindowUsage } from "@/domains/chat/components/context-window-indicator.js";
 import { SubagentDetailPanel } from "@/domains/chat/components/subagent-detail-panel.js";
+import { OnboardingChoiceCard } from "@/domains/chat/components/onboarding-choice-card.js";
+import { useOnboardingChoice } from "@/domains/chat/hooks/use-onboarding-choice.js";
+import { useIsNativePlatform } from "@/runtime/native-auth.js";
 
 import { Link } from "react-router";
 import type { ConversationStarter } from "@/domains/chat/utils/conversation-starters.js";
@@ -359,6 +362,11 @@ export interface ChatRouteContentProps {
 
   // Is channel readonly (computed in parent, used in topbar + here)
   isChannelReadonly: boolean;
+
+  // Onboarding (iOS post-hatch flow)
+  onboardingTasksEmpty: boolean;
+  didOnboarding: boolean;
+  onboardingConversationKey: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +438,9 @@ export function ChatRouteContent({
   streamRetryNonce: _streamRetryNonce,
   refs,
   isChannelReadonly,
+  onboardingTasksEmpty,
+  didOnboarding,
+  onboardingConversationKey,
 }: ChatRouteContentProps) {
   // Destructure grouped props
   const { avatarComponents, avatarTraits, avatarImageUrl } = avatar;
@@ -534,6 +545,25 @@ export function ChatRouteContent({
   const secretSaved = useInteractionStore.use.secretSaved();
   const inlineConfirmationToolCallId = useInteractionStore.use.inlineConfirmationToolCallId();
   const inlineConfirmationAttached = inlineConfirmationToolCallId !== null;
+
+  // -------------------------------------------------------------------------
+  // Onboarding choice card
+  // -------------------------------------------------------------------------
+
+  const isNative = useIsNativePlatform();
+  const {
+    showOnboardingChoice,
+    handleSubmitTasks,
+    dismiss: dismissOnboardingChoice,
+  } = useOnboardingChoice({
+    isNative,
+    didOnboarding,
+    messages,
+    onboardingTasksEmpty,
+    activeConversationKey,
+    onboardingConversationKey,
+    sendMessage,
+  });
 
   // -------------------------------------------------------------------------
   // Derived values
@@ -814,6 +844,7 @@ export function ChatRouteContent({
         isThinking: showThinking,
         thinkingLabel,
         errorNotice: null,
+        showOnboardingChoice,
       }),
     [
       messages,
@@ -823,6 +854,7 @@ export function ChatRouteContent({
       pendingContactRequest,
       showThinking,
       thinkingLabel,
+      showOnboardingChoice,
     ],
   );
 
@@ -1177,6 +1209,12 @@ export function ChatRouteContent({
     subagentEntries,
     onSubagentClick,
     onStopSubagent,
+    renderOnboardingChoice: () => (
+      <OnboardingChoiceCard
+        onSelectSpecific={dismissOnboardingChoice}
+        onSubmitTasks={handleSubmitTasks}
+      />
+    ),
   };
 
   const sharedComposerNoticeProps = {
