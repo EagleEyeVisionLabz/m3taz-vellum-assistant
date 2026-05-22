@@ -7737,6 +7737,14 @@ paths:
                     type: object
                     properties: {}
                     additionalProperties: {}
+                  ces:
+                    type: object
+                    properties:
+                      connected:
+                        type: boolean
+                    required:
+                      - connected
+                    additionalProperties: false
                   profiler:
                     type: object
                     properties:
@@ -7820,6 +7828,7 @@ paths:
                   - memory
                   - cpu
                   - migrations
+                  - ces
                 additionalProperties: false
   /v1/healthz:
     get:
@@ -7858,6 +7867,14 @@ paths:
                     type: object
                     properties: {}
                     additionalProperties: {}
+                  ces:
+                    type: object
+                    properties:
+                      connected:
+                        type: boolean
+                    required:
+                      - connected
+                    additionalProperties: false
                   profiler:
                     type: object
                     properties:
@@ -7941,6 +7958,7 @@ paths:
                   - memory
                   - cpu
                   - migrations
+                  - ces
                 additionalProperties: false
   /v1/heartbeat/checklist:
     get:
