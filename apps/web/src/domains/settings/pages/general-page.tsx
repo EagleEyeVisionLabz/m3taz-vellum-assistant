@@ -10,6 +10,7 @@ import { ResizeCard } from "@/domains/settings/components/resize-card.js";
 import { DeleteAccountSection } from "@/domains/settings/components/delete-account-section.js";
 import { IOSAppCard } from "@/domains/settings/components/ios-app-card.js";
 import { MediaEmbedsCard } from "@/domains/settings/components/media-embeds-card.js";
+import { PreviewReleaseChannel } from "@/domains/settings/components/preview-release-channel.js";
 import { RetireAssistant } from "@/domains/settings/components/retire-assistant.js";
 import { SettingsCard } from "@/domains/settings/components/settings-card.js";
 import { TimezonePicker } from "@/domains/settings/components/timezone-picker.js";
@@ -224,7 +225,14 @@ export function GeneralPage() {
               platformAssistant.current_release_version ??
               null
             }
+            releaseChannel={platformAssistant.release_channel}
             onUpgradeComplete={() => {
+              void refetch();
+            }}
+          />
+          <PreviewReleaseChannel
+            assistantId={platformAssistant.id}
+            onComplete={() => {
               void refetch();
             }}
           />
