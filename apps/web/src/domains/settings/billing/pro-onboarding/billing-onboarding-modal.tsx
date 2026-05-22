@@ -7,6 +7,7 @@ import type { MachineTierEnum } from "@/generated/api/types.gen.js";
 import {
   assistantsActiveRetrieveOptions,
   organizationsBillingSubscriptionOnboardingRetrieveOptions,
+  organizationsBillingSubscriptionOnboardingRetrieveQueryKey,
   organizationsBillingSubscriptionRetrieveOptions,
   organizationsBillingSubscriptionRetrieveQueryKey,
 } from "@/generated/api/@tanstack/react-query.gen.js";
@@ -39,6 +40,13 @@ export function BillingOnboardingModal({
     if (!open) return;
     void queryClient.invalidateQueries({
       queryKey: organizationsBillingSubscriptionRetrieveQueryKey(),
+    });
+    // Refresh the tier-ceiling cache (`max_machine_tier`,
+    // `selected_storage_gib`) the wizard's SetupStep and the shared Storage &
+    // Resources ResizeCard read from, so neither renders pre-upgrade limits
+    // once the new subscription is confirmed.
+    void queryClient.invalidateQueries({
+      queryKey: organizationsBillingSubscriptionOnboardingRetrieveQueryKey(),
     });
   }, [open, queryClient]);
 
