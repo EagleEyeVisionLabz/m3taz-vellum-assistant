@@ -454,3 +454,124 @@ describe("integration — handleScroll-style dispatch via pure helpers", () => {
     expect(handle.calls.scrollToLatest.length).toBe(0);
   });
 });
+
+// Regression for the items-effect underfilled-viewport kick. Captured
+// scrollState from the bug report (2026-05-22):
+//
+//   { scrollTop: 0, scrollHeight: 1370, clientHeight: 1370,
+//     hasMore: true, isLoadingOlder: false, itemCount: 2,
+//     shouldLoadOlder: true, diagnosis: "NEAR TOP ... but NOT loading" }
+//
+// scrollHeight === clientHeight means the user CANNOT scroll. handleScroll
+// can never fire, so without an items-effect kick the load-older path
+// stays gated forever even though `shouldLoadOlder=true`. These tests
+// lock in the precise classification and the dispatch contract.
+describe("integration — items-effect dispatch on underfilled viewport", () => {
+  test("scrollHeight === clientHeight with hasMore=true classifies as shouldLoadOlder=true", () => {
+    const c = classifyScrollPosition(
+      { scrollTop: 0, scrollHeight: 1370, clientHeight: 1370 },
+      { hasMore: true, isLoadingOlder: false, hasConversation: true },
+    );
+    expect(c.shouldLoadOlder).toBe(true);
+    // Underfilled also reads as pinned-to-latest (distanceFromBottom=0
+    // is well under the 64 px threshold) — the items effect needs to be
+    // willing to load AND keep `isPinned=true`.
+    expect(c.isPinned).toBe(true);
+    expect(c.distanceFromBottom).toBe(0);
+  });
+
+  test("items-effect-style dispatch fires onLoadOlder when classify says so", () => {
+    // Mirrors the hook's items-effect path: read DOM metrics, classify,
+    // and if `shouldLoadOlder` is true, call `onLoadOlder()`. This is
+    // the call site the bug was missing — `handleScroll` had it,
+    // the items effect did not.
+    const onLoadOlder = mock(() => {});
+    const c = classifyScrollPosition(
+      { scrollTop: 0, scrollHeight: 1370, clientHeight: 1370 },
+      { hasMore: true, isLoadingOlder: false, hasConversation: true },
+    );
+    if (c.shouldLoadOlder) onLoadOlder();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  test("items-effect dispatch does NOT fire when a load is already in flight", () => {
+    // After the first kick lands, `isLoadingOlder` flips to true. The
+    // next items change (e.g. an unrelated re-render) must NOT fire a
+    // second kick — `classification.shouldLoadOlder` is the only gate
+    // and it must reflect that.
+    const onLoadOlder = mock(() => {});
+    const c = classifyScrollPosition(
+      { scrollTop: 0, scrollHeight: 1370, clientHeight: 1370 },
+      { hasMore: true, isLoadingOlder: true, hasConversation: true },
+    );
+    if (c.shouldLoadOlder) onLoadOlder();
+    expect(onLoadOlder).not.toHaveBeenCalled();
+  });
+
+  test("items-effect dispatch stops kicking once viewport overflows", () => {
+    // After enough older pages prepend, scrollHeight exceeds
+    // clientHeight + LOAD_OLDER_THRESHOLD_PX (200 px). The cascade
+    // terminates: classify reports shouldLoadOlder=false and the kick
+    // does not fire.
+    const onLoadOlder = mock(() => {});
+    const c = classifyScrollPosition(
+      // scrollTop bumped well below the 200 px threshold (the auto-pin
+      // window will have re-pinned to latest, so scrollTop sits near
+      // the bottom of an overflowing viewport).
+      { scrollTop: 5000, scrollHeight: 6370, clientHeight: 1370 },
+      { hasMore: true, isLoadingOlder: false, hasConversation: true },
+    );
+    if (c.shouldLoadOlder) onLoadOlder();
+    expect(onLoadOlder).not.toHaveBeenCalled();
+  });
+
+  test("items-effect dispatch stops kicking once hasMore=false", () => {
+    // Conversation has fewer messages than fit in the viewport AND no
+    // older history exists. The cascade must terminate cleanly with no
+    // further calls.
+    const onLoadOlder = mock(() => {});
+    const c = classifyScrollPosition(
+      { scrollTop: 0, scrollHeight: 1370, clientHeight: 1370 },
+      { hasMore: false, isLoadingOlder: false, hasConversation: true },
+    );
+    if (c.shouldLoadOlder) onLoadOlder();
+    expect(onLoadOlder).not.toHaveBeenCalled();
+  });
+
+  test("chain-load: false→true→false sequence kicks again when still underfilled", () => {
+    // Codex P1 regression. The dispatch site must observe the CURRENT
+    // render's isLoadingOlder flag, not a stale ref. Sequence:
+    //   1. Initial:    isLoadingOlder=false, items underfill → kick.
+    //   2. Loading:    isLoadingOlder=true,  same items     → no kick.
+    //   3. Prepended:  isLoadingOlder=false, items grew but still
+    //                  underfill → MUST kick again to chain-load.
+    // If the dispatch reads a stale flag from the previous render, step 3
+    // sees isLoadingOlder=true and silently skips the kick, stranding
+    // conversations that need multiple older pages to overflow.
+    const onLoadOlder = mock(() => {});
+
+    // Step 1: initial, underfilled
+    let c = classifyScrollPosition(
+      { scrollTop: 0, scrollHeight: 1370, clientHeight: 1370 },
+      { hasMore: true, isLoadingOlder: false, hasConversation: true },
+    );
+    if (c.shouldLoadOlder) onLoadOlder();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    // Step 2: loading in flight
+    c = classifyScrollPosition(
+      { scrollTop: 0, scrollHeight: 1370, clientHeight: 1370 },
+      { hasMore: true, isLoadingOlder: true, hasConversation: true },
+    );
+    if (c.shouldLoadOlder) onLoadOlder();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    // Step 3: prepend landed but still underfilled
+    c = classifyScrollPosition(
+      { scrollTop: 0, scrollHeight: 2200, clientHeight: 2200 },
+      { hasMore: true, isLoadingOlder: false, hasConversation: true },
+    );
+    if (c.shouldLoadOlder) onLoadOlder();
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+});
