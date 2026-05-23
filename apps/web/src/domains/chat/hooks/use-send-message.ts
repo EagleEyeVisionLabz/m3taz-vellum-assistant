@@ -267,7 +267,7 @@ export function useSendMessage({
       }
 
       const effectiveConversationKey =
-        postResult.resolvedConversationId ?? postResult.conversationKey;
+        postResult.resolvedConversationId ?? postResult.conversationId;
 
       if (!isCurrentSendScope(effectiveConversationKey)) {
         recordChatDiagnostic("send_result_ignored_inactive_conversation", {
@@ -537,7 +537,7 @@ export function useSendMessage({
       // Optimistically add a stub conversation to the sidebar for draft
       // conversations that don't exist on the server yet.
       if (!currentConv) {
-        prependConversation(queryClient, assistantId, { conversationKey: activeConversationKey, lastMessageAt: new Date().toISOString(), draft: true } as Conversation);
+        prependConversation(queryClient, assistantId, { conversationId: activeConversationKey, lastMessageAt: new Date().toISOString(), draft: true } as Conversation);
       }
 
       cancelReconciliation();
