@@ -43,7 +43,7 @@ export interface AssistantSideMenuProps extends UseSidebarStateParams {
   assistantName?: string | null;
   collapsed: boolean;
   variant: "rail" | "overlay";
-  activeConversationKey?: string;
+  activeConversationId?: string;
   onSelectConversation: (key: string) => void;
   isIntelligenceActive?: boolean;
   onOpenIntelligence?: () => void;
@@ -66,7 +66,7 @@ export interface AssistantSideMenuProps extends UseSidebarStateParams {
   onRemoveFromGroup?: (conversation: Conversation) => void;
   onRenameGroup?: (groupId: string) => void;
   onDeleteGroup?: (groupId: string) => void;
-  processingConversationKeys?: Set<string>;
+  processingConversationIds?: Set<string>;
   activeConversationProcessing?: boolean;
   onAnalyze?: (conversation: Conversation) => void;
   onOpenInNewWindow?: (conversation: Conversation) => void;
@@ -101,7 +101,7 @@ export function AssistantSideMenu({
   collapsed,
   variant,
   conversations,
-  activeConversationKey,
+  activeConversationId,
   onSelectConversation,
   isIntelligenceActive = false,
   onOpenIntelligence,
@@ -125,8 +125,8 @@ export function AssistantSideMenu({
   onDeleteGroup,
   onClose,
   onSearchClick,
-  processingConversationKeys,
-  attentionConversationKeys,
+  processingConversationIds,
+  attentionConversationIds,
   activeConversationProcessing,
   onAnalyze,
   onOpenInNewWindow,
@@ -137,7 +137,7 @@ export function AssistantSideMenu({
     assistantId,
     conversations,
     conversationGroups,
-    attentionConversationKeys,
+    attentionConversationIds,
   });
 
   const pinnedApps = usePinnedAppsStore.use.pinnedApps();
@@ -146,10 +146,10 @@ export function AssistantSideMenu({
 
   const renderThreadPinToggle = (conversation: Conversation): ReactNode => {
     const isProcessing =
-      conversation.conversationId === activeConversationKey
+      conversation.conversationId === activeConversationId
         ? activeConversationProcessing ?? false
-        : processingConversationKeys?.has(conversation.conversationId) ?? false;
-    const needsAttention = attentionConversationKeys?.has(conversation.conversationId) ?? false;
+        : processingConversationIds?.has(conversation.conversationId) ?? false;
+    const needsAttention = attentionConversationIds?.has(conversation.conversationId) ?? false;
     return (
       <ThreadPinToggle
         conversation={conversation}
@@ -245,8 +245,8 @@ export function AssistantSideMenu({
   // --- Shared sub-component props ---
 
   const subGroupProps = {
-    activeConversationKey,
-    attentionConversationKeys,
+    activeConversationId,
+    attentionConversationIds,
     onSelectConversation: useCallback(
       (key: string) => { onSelectConversation(key); onClose?.(); },
       [onSelectConversation, onClose],
@@ -288,7 +288,7 @@ export function AssistantSideMenu({
             leadingSlot={renderThreadPinToggle(c)}
             label={c.title ?? "Untitled"}
             marqueeOnHover
-            active={c.conversationId === activeConversationKey}
+            active={c.conversationId === activeConversationId}
             onSelect={() => selectAndClose(c.conversationId)}
             trailingAction={renderThreadActions(c)}
           />,
@@ -378,10 +378,10 @@ export function AssistantSideMenu({
               slack={sidebar.slack.all}
               recents={sidebar.recents.all}
               customGroups={sidebar.conversationGroupsEnabled ? sidebar.customGroups : undefined}
-              activeConversationKey={activeConversationKey}
+              activeConversationId={activeConversationId}
               onSelectConversation={selectAndClose}
               renderActions={renderThreadActions}
-              attentionConversationKeys={attentionConversationKeys}
+              attentionConversationIds={attentionConversationIds}
             />
           </div>
         ) : (
@@ -483,7 +483,7 @@ export function AssistantSideMenu({
                                 leadingSlot={renderThreadPinToggle(c)}
                                 label={c.title ?? "Untitled"}
                                 marqueeOnHover
-                                active={c.conversationId === activeConversationKey}
+                                active={c.conversationId === activeConversationId}
                                 onSelect={() => selectAndClose(c.conversationId)}
                                 trailingAction={renderThreadActions(c)}
                               />,

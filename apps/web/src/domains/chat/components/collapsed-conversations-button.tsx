@@ -32,7 +32,7 @@ export interface CollapsedConversationsButtonProps {
   recents: Conversation[];
   /** Custom conversation groups (visible when the conversationGroupsUI flag is on). */
   customGroups?: CustomGroup[];
-  activeConversationKey?: string;
+  activeConversationId?: string;
   onSelectConversation: (conversationKey: string) => void;
   /**
    * Optional: build the hover-revealed action menu for a given
@@ -42,7 +42,7 @@ export interface CollapsedConversationsButtonProps {
    */
   renderActions?: (conversation: Conversation) => ReactNode;
   /** Set of conversation keys that need user attention (pending approval/secret). */
-  attentionConversationKeys?: Set<string>;
+  attentionConversationIds?: Set<string>;
 }
 
 export function CollapsedConversationsButton({
@@ -52,10 +52,10 @@ export function CollapsedConversationsButton({
   slack,
   recents,
   customGroups,
-  activeConversationKey,
+  activeConversationId,
   onSelectConversation,
   renderActions,
-  attentionConversationKeys,
+  attentionConversationIds,
 }: CollapsedConversationsButtonProps) {
   const [open, setOpen] = useState(false);
 
@@ -77,7 +77,7 @@ export function CollapsedConversationsButton({
     return null;
   }
 
-  const hasAttention = attentionConversationKeys && attentionConversationKeys.size > 0;
+  const hasAttention = attentionConversationIds && attentionConversationIds.size > 0;
 
   const closeMenu = () => setOpen(false);
   const handleSelect = (conversationKey: string) => {
@@ -113,10 +113,10 @@ export function CollapsedConversationsButton({
           <SimpleSection
             title="Pinned"
             conversations={pinned}
-            activeConversationKey={activeConversationKey}
+            activeConversationId={activeConversationId}
             onSelect={handleSelect}
             renderActions={renderActions}
-            attentionConversationKeys={attentionConversationKeys}
+            attentionConversationIds={attentionConversationIds}
           />
         ) : null}
 
@@ -124,20 +124,20 @@ export function CollapsedConversationsButton({
           <SimpleSection
             title="Scheduled"
             conversations={scheduled}
-            activeConversationKey={activeConversationKey}
+            activeConversationId={activeConversationId}
             onSelect={handleSelect}
             renderActions={renderActions}
-            attentionConversationKeys={attentionConversationKeys}
+            attentionConversationIds={attentionConversationIds}
           />
         ) : null}
 
         {background.length > 0 ? (
           <BackgroundSection
             conversations={background}
-            activeConversationKey={activeConversationKey}
+            activeConversationId={activeConversationId}
             onSelect={handleSelect}
             renderActions={renderActions}
-            attentionConversationKeys={attentionConversationKeys}
+            attentionConversationIds={attentionConversationIds}
           />
         ) : null}
 
@@ -145,10 +145,10 @@ export function CollapsedConversationsButton({
           <SimpleSection
             title="Slack"
             conversations={slack}
-            activeConversationKey={activeConversationKey}
+            activeConversationId={activeConversationId}
             onSelect={handleSelect}
             renderActions={renderActions}
-            attentionConversationKeys={attentionConversationKeys}
+            attentionConversationIds={attentionConversationIds}
           />
         ) : null}
 
@@ -156,10 +156,10 @@ export function CollapsedConversationsButton({
           <SimpleSection
             title="Recents"
             conversations={recents}
-            activeConversationKey={activeConversationKey}
+            activeConversationId={activeConversationId}
             onSelect={handleSelect}
             renderActions={renderActions}
-            attentionConversationKeys={attentionConversationKeys}
+            attentionConversationIds={attentionConversationIds}
           />
         ) : null}
 
@@ -169,10 +169,10 @@ export function CollapsedConversationsButton({
               key={group.id}
               title={group.name}
               conversations={group.conversations}
-              activeConversationKey={activeConversationKey}
+              activeConversationId={activeConversationId}
               onSelect={handleSelect}
               renderActions={renderActions}
-              attentionConversationKeys={attentionConversationKeys}
+              attentionConversationIds={attentionConversationIds}
             />
           ) : null,
         )}
@@ -206,10 +206,10 @@ function SectionHeader({ title, count }: SectionHeaderProps) {
 interface SimpleSectionProps {
   title: string;
   conversations: Conversation[];
-  activeConversationKey?: string;
+  activeConversationId?: string;
   onSelect: (conversationKey: string) => void;
   renderActions?: (conversation: Conversation) => ReactNode;
-  attentionConversationKeys?: Set<string>;
+  attentionConversationIds?: Set<string>;
 }
 
 /**
@@ -219,23 +219,23 @@ interface SimpleSectionProps {
 function SimpleSection({
   title,
   conversations,
-  activeConversationKey,
+  activeConversationId,
   onSelect,
   renderActions,
-  attentionConversationKeys,
+  attentionConversationIds,
 }: SimpleSectionProps) {
   return (
     <div className="pb-1">
       <SectionHeader title={title} count={conversations.length} />
       <div className="px-2">
         {conversations.map((c) => {
-          const needsAttention = attentionConversationKeys?.has(c.conversationId) ?? false;
+          const needsAttention = attentionConversationIds?.has(c.conversationId) ?? false;
           return (
             <PanelItem
               key={c.conversationId}
               icon={needsAttention ? CircleAlert : isConversationPinned(c) ? Pin : undefined}
               label={c.title ?? "Untitled"}
-              active={c.conversationId === activeConversationKey}
+              active={c.conversationId === activeConversationId}
               onSelect={() => onSelect(c.conversationId)}
               trailingAction={renderActions?.(c)}
               className={needsAttention ? "text-[var(--system-mid-strong)]" : undefined}
@@ -249,10 +249,10 @@ function SimpleSection({
 
 interface BackgroundSectionProps {
   conversations: Conversation[];
-  activeConversationKey?: string;
+  activeConversationId?: string;
   onSelect: (conversationKey: string) => void;
   renderActions?: (conversation: Conversation) => ReactNode;
-  attentionConversationKeys?: Set<string>;
+  attentionConversationIds?: Set<string>;
 }
 
 /**
@@ -263,25 +263,25 @@ interface BackgroundSectionProps {
  */
 function BackgroundSection({
   conversations,
-  activeConversationKey,
+  activeConversationId,
   onSelect,
   renderActions,
-  attentionConversationKeys,
+  attentionConversationIds,
 }: BackgroundSectionProps) {
   const subGroups = useMemo(() => groupBackgroundConversationsBySource(conversations), [conversations]);
   const [manualExpandedKeys, setManualExpandedKeys] = useState<Set<string>>(new Set());
 
   const attentionExpandedKeys = useMemo(() => {
-    if (!attentionConversationKeys || attentionConversationKeys.size === 0) return new Set<string>();
+    if (!attentionConversationIds || attentionConversationIds.size === 0) return new Set<string>();
     const keys = new Set<string>();
     for (const group of subGroups) {
       if (group.key.startsWith("__single__:")) continue;
-      if (group.conversations.some(c => attentionConversationKeys.has(c.conversationId))) {
+      if (group.conversations.some(c => attentionConversationIds.has(c.conversationId))) {
         keys.add(group.key);
       }
     }
     return keys;
-  }, [attentionConversationKeys, subGroups]);
+  }, [attentionConversationIds, subGroups]);
 
   const expandedKeys = useMemo(() => {
     if (attentionExpandedKeys.size === 0) return manualExpandedKeys;
@@ -314,13 +314,13 @@ function BackgroundSection({
           if (isSingle) {
             const c = group.conversations[0];
             if (!c) return null;
-            const singleNeedsAttention = attentionConversationKeys?.has(c.conversationId) ?? false;
+            const singleNeedsAttention = attentionConversationIds?.has(c.conversationId) ?? false;
             return (
               <PanelItem
                 key={c.conversationId}
                 icon={singleNeedsAttention ? CircleAlert : isConversationPinned(c) ? Pin : undefined}
                 label={c.title ?? "Untitled"}
-                active={c.conversationId === activeConversationKey}
+                active={c.conversationId === activeConversationId}
                 onSelect={() => onSelect(c.conversationId)}
                 trailingAction={renderActions?.(c)}
                 className={singleNeedsAttention ? "text-[var(--system-mid-strong)]" : undefined}
@@ -339,13 +339,13 @@ function BackgroundSection({
               />
               {isExpanded
                 ? group.conversations.map((c) => {
-                    const rowNeedsAttention = attentionConversationKeys?.has(c.conversationId) ?? false;
+                    const rowNeedsAttention = attentionConversationIds?.has(c.conversationId) ?? false;
                     return (
                       <PanelItem
                         key={c.conversationId}
                         icon={rowNeedsAttention ? CircleAlert : isConversationPinned(c) ? Pin : undefined}
                         label={c.title ?? "Untitled"}
-                        active={c.conversationId === activeConversationKey}
+                        active={c.conversationId === activeConversationId}
                         onSelect={() => onSelect(c.conversationId)}
                         trailingAction={renderActions?.(c)}
                         className={rowNeedsAttention ? "text-[var(--system-mid-strong)]" : undefined}
