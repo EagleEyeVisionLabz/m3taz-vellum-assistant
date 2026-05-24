@@ -8,7 +8,7 @@ import { useClientFeatureFlagStore } from "@/lib/feature-flags/client-feature-fl
 import { useAssistantFeatureFlagStore } from "@/lib/feature-flags/assistant-feature-flag-store.js";
 import {
   ALL_FLAGS,
-  ldKeyToStoreKey,
+  flagKeyToStoreKey,
   scopeIncludes,
   type FlagScope,
   type SingleScope,
@@ -36,7 +36,7 @@ export function FeatureFlagsPanel() {
   const flags: FlagDisplayEntry[] = useMemo(() => {
     const entries: FlagDisplayEntry[] = [];
     for (const flag of ALL_FLAGS) {
-      const storeKey = ldKeyToStoreKey(flag.key);
+      const storeKey = flagKeyToStoreKey(flag.key);
       const clientVal = clientState[storeKey];
       const assistantVal = assistantState[storeKey];
       const value =
