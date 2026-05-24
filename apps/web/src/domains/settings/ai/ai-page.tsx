@@ -6,7 +6,7 @@ import {
   Info,
   Loader2,
 } from "lucide-react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import {
   type ReactNode,
   useCallback,
@@ -438,6 +438,7 @@ function ModeToggle({ mode, onChange }: ModeToggleProps) {
 }
 
 interface ServiceCardProps {
+  id?: string;
   title: string;
   subtitle: string;
   mode: ServiceMode;
@@ -445,9 +446,10 @@ interface ServiceCardProps {
   children: ReactNode;
 }
 
-function ServiceCard({ title, subtitle, mode, onModeChange, children }: ServiceCardProps) {
+function ServiceCard({ id, title, subtitle, mode, onModeChange, children }: ServiceCardProps) {
   return (
     <SettingsCard
+      id={id}
       title={title}
       subtitle={subtitle}
       accessory={<ModeToggle mode={mode} onChange={onModeChange} />}
@@ -862,6 +864,7 @@ interface EmailServiceCardProps {
 function EmailServiceCard({ assistantId, assistantHandle }: EmailServiceCardProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const emailRootDomain = useEnvironmentStore.use.emailRootDomain();
   const [mode, setMode] = useState<ServiceMode>(
     () => getLocalSetting(LS_EMAIL_MODE, "managed") as ServiceMode,
@@ -934,6 +937,16 @@ function EmailServiceCard({ assistantId, assistantHandle }: EmailServiceCardProp
     enabled: !!assistantId && !!address?.id && mode === "managed",
     refetchOnWindowFocus: false,
   });
+
+  useEffect(() => {
+    if (searchParams.get("release") !== "1" || !domain || address) return;
+    setReleaseConfirmOpen(true);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("release");
+      return next;
+    }, { replace: true });
+  }, [address, domain, searchParams, setSearchParams]);
 
   // -- Mutations -------------------------------------------------------------
   const registerDomain = useMutation(assistantsDomainsCreateMutation());
@@ -1083,6 +1096,7 @@ function EmailServiceCard({ assistantId, assistantHandle }: EmailServiceCardProp
 
   return (
     <ServiceCard
+      id="email"
       title="Email"
       subtitle="Configure how your assistant sends and receives email"
       mode={mode}
@@ -1350,6 +1364,14 @@ export function AiPage() {
   const [manageProfilesOpen, setManageProfilesOpen] = useState(false);
   const [overridesOpen, setOverridesOpen] = useState(false);
   const [manageProvidersOpen, setManageProvidersOpen] = useState(false);
+
+  useEffect(() => {
+    const hash = window.location.hash.slice(1);
+    if (!hash) return;
+    requestAnimationFrame(() => {
+      document.getElementById(hash)?.scrollIntoView({ block: "start" });
+    });
+  }, []);
 
   // -- Backend provisioning (matches desktop SettingsStore) --
   const queryClient = useQueryClient();

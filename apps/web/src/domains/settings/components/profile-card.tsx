@@ -1,6 +1,9 @@
 import { AlertCircle, Check, Loader2 } from "lucide-react";
+import { Link } from "react-router";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { useQuery } from "@tanstack/react-query";
 
 import { Button } from "@vellum/design-library/components/button";
 import { Input } from "@vellum/design-library/components/input";
@@ -23,7 +26,9 @@ import {
   updateAssistantHandle,
   type UpdateAssistantHandleResult,
 } from "@/domains/account/handle.js";
+import { assistantsDomainsListOptions } from "@/generated/api/@tanstack/react-query.gen.js";
 import type { Assistant } from "@/generated/api/types.gen.js";
+import { routes } from "@/utils/routes.js";
 
 // Debounce window before firing the availability check. Tight enough that
 // feedback feels live as the user types; loose enough that fast typers
@@ -179,7 +184,7 @@ function HandleEditor<T>({
   })();
 
   const helperOrIdle: string | null = (() => {
-    if (errorText) return null;
+    if (errorText) return helperText;
     if (isUnchanged) return idleHelperText ?? null;
     if (isChecking) return "Checking availability…";
     if (availability?.available) return "Available.";
@@ -280,21 +285,6 @@ function HandleEditor<T>({
   })();
 
   // ----------------------------------------------------------------
-  // Live preview — the moment of meaning. Shows what your handle
-  // renders as everywhere else (roadmap comments, mentions, etc.).
-  // When there's no current handle and nothing typed yet, fall back
-  // to a neutral placeholder so the preview line still anchors the
-  // empty state.
-  // ----------------------------------------------------------------
-  const previewHandle =
-    normalized.length > 0
-      ? normalized
-      : initialHandle.length > 0
-        ? initialHandle
-        : "—";
-  const previewIsDirty = !isUnchanged && normalized.length > 0;
-
-  // ----------------------------------------------------------------
   // Button label — empty save button is a dead pixel, so let it
   // narrate its own state instead.
   // ----------------------------------------------------------------
@@ -325,9 +315,6 @@ function HandleEditor<T>({
         label={inputLabel}
         value={value}
         onChange={(e) => {
-          // Strip whitespace as the user types — pasted values often
-          // bring leading/trailing whitespace, and the server lowercases
-          // anyway, so do it here for clean preview.
           setValue(e.target.value.replace(/\s+/g, ""));
           setAvailability(null);
           setServerError(null);
@@ -346,49 +333,25 @@ function HandleEditor<T>({
         }
         rightIcon={rightIcon}
         errorText={errorText ?? undefined}
-        helperText={helperOrIdle ?? helperText}
+        helperText={helperOrIdle ?? undefined}
         aria-invalid={Boolean(errorText)}
         fullWidth
         data-testid={`${fieldId}-input`}
       />
-
-      {/* Live preview — quiet supporting line, not a callout box. */}
-      <div
-        className="flex items-baseline gap-2 text-label-small-default text-[var(--content-tertiary)]"
-        aria-live="polite"
-      >
-        <span>Appears as</span>
-        <AnimatePresence mode="popLayout" initial={false}>
-          <motion.span
-            key={previewHandle}
-            initial={prefersReducedMotion ? false : { opacity: 0, y: 1 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={prefersReducedMotion ? undefined : { opacity: 0, y: -1 }}
-            transition={{ duration: 0.14, ease: "easeOut" }}
-            className={
-              "font-mono " +
-              (previewIsDirty
-                ? "text-[var(--content-primary)]"
-                : "text-[var(--content-secondary)]")
-            }
+      {(!isUnchanged || saveStatus !== "idle") && (
+        <div className="flex justify-end">
+          <Button
+            variant="primary"
+            size="compact"
+            onClick={handleSave}
+            disabled={!isSaveable}
+            aria-live="polite"
+            data-testid={`${fieldId}-save`}
           >
-            @{previewHandle}
-          </motion.span>
-        </AnimatePresence>
-      </div>
-
-      <div className="flex justify-end">
-        <Button
-          variant="primary"
-          size="compact"
-          onClick={handleSave}
-          disabled={!isSaveable}
-          aria-live="polite"
-          data-testid={`${fieldId}-save`}
-        >
-          {saveLabel}
-        </Button>
-      </div>
+            {saveLabel}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -447,7 +410,7 @@ function UserHandleSection({ initial, onSaved }: UserHandleSectionProps) {
   return (
     <HandleEditor<UserMe>
       initialHandle={initial.username}
-      inputLabel="Handle"
+      inputLabel="User handle"
       helperText="Lowercase letters, digits, hyphens, and underscores. 3–30 characters."
       idleHelperText={idleHelperText}
       checkAvailable={checkAvailable}
@@ -472,10 +435,16 @@ function AssistantHandleSection({
   assistant,
   onSaved,
 }: AssistantHandleSectionProps) {
-  // Assistants may not have a handle yet (the column is nullable; auto-derivation
-  // only kicks in on rename when the assistant has a non-default name). Treat
-  // ``null`` as an empty string for the editor so the "pick one" flow works.
   const currentHandle = assistant.handle ?? "";
+
+  const domainsQuery = useQuery({
+    ...assistantsDomainsListOptions({
+      path: { assistant_id: assistant.id },
+    }),
+  });
+  const domain = domainsQuery.data?.results?.[0];
+  const lockedBySubdomain =
+    !!domain && domain.subdomain.toLowerCase() === currentHandle.toLowerCase();
 
   const idleHelperText =
     currentHandle.length === 0
@@ -499,6 +468,40 @@ function AssistantHandleSection({
     },
     [assistant.id],
   );
+
+  if (lockedBySubdomain) {
+    return (
+      <div className="flex flex-col gap-2">
+        <Input
+          label="Assistant handle"
+          value={currentHandle}
+          readOnly
+          disabled
+          leftIcon={
+            <span
+              className="select-none font-mono text-[var(--content-tertiary)]"
+              aria-hidden
+            >
+              @
+            </span>
+          }
+          fullWidth
+          data-testid="assistant-handle-input"
+        />
+        <p className="text-body-small-default text-[var(--content-tertiary)]">
+          Your assistant's handle is locked because it's used as its email subdomain.
+          To change it,{" "}
+          <Link
+            to={`${routes.settings.ai}?release=1#email`}
+            className="text-[var(--content-link)] underline hover:text-[var(--content-link-hover)]"
+          >
+            release the subdomain
+          </Link>{" "}
+          first.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <HandleEditor<Assistant>
@@ -610,7 +613,7 @@ export function ProfileCard({
   }, []);
 
   return (
-    <SettingsCard title="Profile" subtitle="Your public handle on Vellum.">
+    <SettingsCard title="Profile" subtitle="Manage your user and assistant public handles.">
       {error ? (
         <p className="text-body-small-default text-[var(--system-negative-strong)]">
           {error}
