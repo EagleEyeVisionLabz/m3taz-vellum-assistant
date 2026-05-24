@@ -7,6 +7,8 @@ export const SYNC_TAGS = {
   assistantSounds: "assistant:self:sounds",
   assistantSchedules: "assistant:self:schedules",
   conversationsList: "conversations:list",
+  featureFlagsClient: "feature-flags:client",
+  featureFlagsAssistant: "feature-flags:assistant",
 } as const;
 
 export type KnownSyncInvalidationTag =
