@@ -14,13 +14,13 @@ mock.module("../util/logger.js", () => ({
 
 import { _resetDisplayOrderMigrationForTests } from "../memory/conversation-display-order-migration.js";
 import { _resetGroupMigrationForTests } from "../memory/conversation-group-migration.js";
-import { resetDb } from "../memory/db-connection.js";
 import { getSqliteFrom } from "../memory/db-connection.js";
 import { initializeDb } from "../memory/db-init.js";
 import { migrateAddConversationInferenceProfile } from "../memory/migrations/227-add-conversation-inference-profile.js";
 import { migrateRenameInferenceProfileSnakeCase } from "../memory/migrations/228-rename-inference-profile-snake-case.js";
 import * as schema from "../memory/schema.js";
 import { getDbPath } from "../util/platform.js";
+import { resetDbForTesting } from "./db-test-helpers.js";
 
 function createTestDb() {
   const sqlite = new Database(":memory:");
@@ -67,7 +67,7 @@ function bootstrapPreInferenceProfileConversations(raw: Database): void {
 }
 
 function removeTestDbFiles(): void {
-  resetDb();
+  resetDbForTesting();
   // Reset the in-process guards for the lazy `group_id` / `display_order` /
   // `is_pinned` migrations so the freshly recreated DB gets those columns
   // again. Otherwise downstream tests hit `no such column: group_id`.

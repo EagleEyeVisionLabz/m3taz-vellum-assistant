@@ -9,13 +9,14 @@ import {
   recordConversationSeenSignal,
 } from "../memory/conversation-attention-store.js";
 import { createConversation } from "../memory/conversation-crud.js";
-import { getDb, resetDb } from "../memory/db-connection.js";
+import { getDb } from "../memory/db-connection.js";
 import { initializeDb } from "../memory/db-init.js";
 import type { AssistantEvent } from "../runtime/assistant-event.js";
 import { assistantEventHub } from "../runtime/assistant-event-hub.js";
 import { ROUTES as CONVERSATION_LIST_ROUTES } from "../runtime/routes/conversation-list-routes.js";
 import { ROUTES as CONVERSATION_MANAGEMENT_ROUTES } from "../runtime/routes/conversation-management-routes.js";
 import type { RouteDefinition } from "../runtime/routes/types.js";
+import { resetDbForTesting } from "./db-test-helpers.js";
 import { waitFor } from "./helpers/wait-for.js";
 
 initializeDb();
@@ -70,7 +71,7 @@ describe("conversation sync tags", () => {
   });
 
   afterAll(() => {
-    resetDb();
+    resetDbForTesting();
   });
 
   test("rename emits the typed title event and a metadata-only sync tag (no list umbrella)", async () => {
