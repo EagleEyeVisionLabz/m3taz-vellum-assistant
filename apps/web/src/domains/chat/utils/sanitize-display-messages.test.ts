@@ -3,15 +3,11 @@ import { describe, expect, test } from "bun:test";
 import { sanitizeDisplayMessages } from "@/domains/chat/utils/sanitize-display-messages.js";
 import type { DisplayMessage } from "@/domains/chat/types/types.js";
 import type { ChatMessageToolCall } from "@/domains/chat/api/event-types.js";
-import { newStableId } from "@/domains/chat/utils/stable-id.js";
-
 function makeMessage(
-  overrides: Partial<DisplayMessage> & { stableId?: string; id?: string },
+  overrides: Partial<DisplayMessage> & { id?: string },
 ): DisplayMessage {
-  const sid = overrides.stableId ?? newStableId("test");
   return {
-    stableId: sid,
-    id: overrides.id ?? sid,
+    id: overrides.id ?? crypto.randomUUID(),
     role: "assistant",
     content: "",
     ...overrides,
@@ -31,21 +27,21 @@ function makeToolCall(
 describe("sanitizeDisplayMessages", () => {
   test("returns the input unchanged when no sub-method fires", () => {
     const messages: DisplayMessage[] = [
-      makeMessage({ stableId: "u-1", role: "user", content: "hi", timestamp: 1 }),
-      makeMessage({ stableId: "a-1", role: "assistant", content: "hello", timestamp: 2 }),
+      makeMessage({ id: "u-1", role: "user", content: "hi", timestamp: 1 }),
+      makeMessage({ id: "a-1", role: "assistant", content: "hello", timestamp: 2 }),
     ];
     const result = sanitizeDisplayMessages(messages);
-    expect(result.map((m) => m.stableId)).toEqual(["u-1", "a-1"]);
+    expect(result.map((m) => m.id)).toEqual(["u-1", "a-1"]);
   });
 
   test("does not mutate the input array", () => {
     const messages: DisplayMessage[] = [
-      makeMessage({ stableId: "b", role: "assistant", content: "b", timestamp: 200 }),
-      makeMessage({ stableId: "a", role: "assistant", content: "a", timestamp: 100 }),
+      makeMessage({ id: "b", role: "assistant", content: "b", timestamp: 200 }),
+      makeMessage({ id: "a", role: "assistant", content: "a", timestamp: 100 }),
     ];
-    const snapshot = messages.map((m) => m.stableId);
+    const snapshot = messages.map((m) => m.id);
     sanitizeDisplayMessages(messages);
-    expect(messages.map((m) => m.stableId)).toEqual(snapshot);
+    expect(messages.map((m) => m.id)).toEqual(snapshot);
   });
 });
 
@@ -59,22 +55,22 @@ describe("sanitizeDisplayMessages · timestamp sort", () => {
   // isolation.
   test("orders timestamped messages ascending", () => {
     const messages: DisplayMessage[] = [
-      makeMessage({ stableId: "c", role: "user", content: "c", timestamp: 300 }),
-      makeMessage({ stableId: "a", role: "user", content: "a", timestamp: 100 }),
-      makeMessage({ stableId: "b", role: "user", content: "b", timestamp: 200 }),
+      makeMessage({ id: "c", role: "user", content: "c", timestamp: 300 }),
+      makeMessage({ id: "a", role: "user", content: "a", timestamp: 100 }),
+      makeMessage({ id: "b", role: "user", content: "b", timestamp: 200 }),
     ];
     const result = sanitizeDisplayMessages(messages);
-    expect(result.map((m) => m.stableId)).toEqual(["a", "b", "c"]);
+    expect(result.map((m) => m.id)).toEqual(["a", "b", "c"]);
   });
 
   test("rows without a timestamp keep their original slot", () => {
     const messages: DisplayMessage[] = [
-      makeMessage({ stableId: "later-ts", role: "user", content: "x", timestamp: 200 }),
-      makeMessage({ stableId: "no-ts", role: "user", content: "y" }),
-      makeMessage({ stableId: "earlier-ts", role: "user", content: "z", timestamp: 100 }),
+      makeMessage({ id: "later-ts", role: "user", content: "x", timestamp: 200 }),
+      makeMessage({ id: "no-ts", role: "user", content: "y" }),
+      makeMessage({ id: "earlier-ts", role: "user", content: "z", timestamp: 100 }),
     ];
     const result = sanitizeDisplayMessages(messages);
-    expect(result.map((m) => m.stableId)).toEqual([
+    expect(result.map((m) => m.id)).toEqual([
       "earlier-ts",
       "no-ts",
       "later-ts",
@@ -88,15 +84,15 @@ describe("sanitizeDisplayMessages · timestamp sort", () => {
 
 describe("sanitizeDisplayMessages · invalid row filter", () => {
   test("drops blank user rows with no content / segments / surfaces / attachments / tool calls", () => {
-    const blank = makeMessage({ stableId: "blank", role: "user", content: "" });
-    const real = makeMessage({ stableId: "real", role: "user", content: "hi", timestamp: 1 });
+    const blank = makeMessage({ id: "blank", role: "user", content: "" });
+    const real = makeMessage({ id: "real", role: "user", content: "hi", timestamp: 1 });
     const result = sanitizeDisplayMessages([blank, real]);
-    expect(result.map((m) => m.stableId)).toEqual(["real"]);
+    expect(result.map((m) => m.id)).toEqual(["real"]);
   });
 
   test("drops user rows with whitespace-only content", () => {
     const whitespace = makeMessage({
-      stableId: "whitespace",
+      id: "whitespace",
       role: "user",
       content: "   \n\t  ",
     });
@@ -106,7 +102,7 @@ describe("sanitizeDisplayMessages · invalid row filter", () => {
 
   test("drops user rows whose textSegments are all empty strings", () => {
     const emptySegments = makeMessage({
-      stableId: "empty-segments",
+      id: "empty-segments",
       role: "user",
       content: "",
       textSegments: [{ type: "text", content: "" }],
@@ -117,7 +113,7 @@ describe("sanitizeDisplayMessages · invalid row filter", () => {
 
   test("drops phantom tool-only user messages where every toolName === 'unknown'", () => {
     const phantom = makeMessage({
-      stableId: "phantom",
+      id: "phantom",
       role: "user",
       content: "",
       toolCalls: [
@@ -130,7 +126,7 @@ describe("sanitizeDisplayMessages · invalid row filter", () => {
 
   test("keeps user messages with mixed known + unknown tool calls", () => {
     const mixed = makeMessage({
-      stableId: "mixed",
+      id: "mixed",
       role: "user",
       content: "",
       toolCalls: [
@@ -139,28 +135,28 @@ describe("sanitizeDisplayMessages · invalid row filter", () => {
       ],
     });
     const result = sanitizeDisplayMessages([mixed]);
-    expect(result.map((m) => m.stableId)).toEqual(["mixed"]);
+    expect(result.map((m) => m.id)).toEqual(["mixed"]);
   });
 
   test("never drops assistant rows even when they look 'empty'", () => {
     const emptyAssistant = makeMessage({
-      stableId: "empty-asst",
+      id: "empty-asst",
       role: "assistant",
       content: "",
     });
     const result = sanitizeDisplayMessages([emptyAssistant]);
-    expect(result.map((m) => m.stableId)).toEqual(["empty-asst"]);
+    expect(result.map((m) => m.id)).toEqual(["empty-asst"]);
   });
 
   test("never drops queued user rows", () => {
     const queued = makeMessage({
-      stableId: "queued",
+      id: "queued",
       role: "user",
       content: "",
       queueStatus: "queued",
     });
     const result = sanitizeDisplayMessages([queued]);
-    expect(result.map((m) => m.stableId)).toEqual(["queued"]);
+    expect(result.map((m) => m.id)).toEqual(["queued"]);
   });
 });
 
@@ -170,10 +166,10 @@ describe("sanitizeDisplayMessages · invalid row filter", () => {
 
 describe("sanitizeDisplayMessages · drop trailing assistant duplicate", () => {
   test("drops a trailing assistant row that mirrors the previous one (the bug we're patching)", () => {
-    // Mirrors production failure: a "server-…" stableId row with `id` set is
-    // followed by an "assistant-…" stableId row with `id` undefined.
+    // Mirrors production failure: a server-id row is followed by a
+    // sibling row whose `id` is a different value (here a synthesized
+    // optimistic-style id).
     const server = makeMessage({
-      stableId: "server-abc",
       id: "msg-1",
       role: "assistant",
       content: "Final answer",
@@ -184,7 +180,7 @@ describe("sanitizeDisplayMessages · drop trailing assistant duplicate", () => {
       timestamp: 1000,
     });
     const orphan = makeMessage({
-      stableId: "assistant-abc",
+      id: "assistant-abc",
       role: "assistant",
       content: "Final answer",
       textSegments: [{ type: "text", content: "Final answer" }],
@@ -195,47 +191,47 @@ describe("sanitizeDisplayMessages · drop trailing assistant duplicate", () => {
     });
 
     const result = sanitizeDisplayMessages([server, orphan]);
-    expect(result.map((m) => m.stableId)).toEqual(["server-abc"]);
+    expect(result.map((m) => m.id)).toEqual(["msg-1"]);
   });
 
   test("keeps both rows when only one is the assistant", () => {
-    const user = makeMessage({ stableId: "u", role: "user", content: "hi", timestamp: 1 });
+    const user = makeMessage({ id: "u", role: "user", content: "hi", timestamp: 1 });
     const assistant = makeMessage({
-      stableId: "a",
+      id: "a",
       role: "assistant",
       content: "hi",
       timestamp: 2,
     });
     const result = sanitizeDisplayMessages([user, assistant]);
-    expect(result.map((m) => m.stableId)).toEqual(["u", "a"]);
+    expect(result.map((m) => m.id)).toEqual(["u", "a"]);
   });
 
   test("keeps both rows when textSegments differ", () => {
     const first = makeMessage({
-      stableId: "first",
+      id: "first",
       role: "assistant",
       textSegments: [{ type: "text", content: "Answer A" }],
       timestamp: 1,
     });
     const second = makeMessage({
-      stableId: "second",
+      id: "second",
       role: "assistant",
       textSegments: [{ type: "text", content: "Answer B" }],
       timestamp: 2,
     });
     const result = sanitizeDisplayMessages([first, second]);
-    expect(result.map((m) => m.stableId)).toEqual(["first", "second"]);
+    expect(result.map((m) => m.id)).toEqual(["first", "second"]);
   });
 
   test("keeps both rows when textSegments lengths differ", () => {
     const first = makeMessage({
-      stableId: "first",
+      id: "first",
       role: "assistant",
       textSegments: [{ type: "text", content: "Answer" }],
       timestamp: 1,
     });
     const second = makeMessage({
-      stableId: "second",
+      id: "second",
       role: "assistant",
       textSegments: [
         { type: "text", content: "Answer" },
@@ -244,52 +240,52 @@ describe("sanitizeDisplayMessages · drop trailing assistant duplicate", () => {
       timestamp: 2,
     });
     const result = sanitizeDisplayMessages([first, second]);
-    expect(result.map((m) => m.stableId)).toEqual(["first", "second"]);
+    expect(result.map((m) => m.id)).toEqual(["first", "second"]);
   });
 
   test("keeps both rows when tool call toolName differs", () => {
     const first = makeMessage({
-      stableId: "first",
+      id: "first",
       role: "assistant",
       toolCalls: [makeToolCall({ id: "tc", toolName: "bash", result: "x" })],
       timestamp: 1,
     });
     const second = makeMessage({
-      stableId: "second",
+      id: "second",
       role: "assistant",
       toolCalls: [makeToolCall({ id: "tc", toolName: "read", result: "x" })],
       timestamp: 2,
     });
     const result = sanitizeDisplayMessages([first, second]);
-    expect(result.map((m) => m.stableId)).toEqual(["first", "second"]);
+    expect(result.map((m) => m.id)).toEqual(["first", "second"]);
   });
 
   test("keeps both rows when tool call result differs", () => {
     const first = makeMessage({
-      stableId: "first",
+      id: "first",
       role: "assistant",
       toolCalls: [makeToolCall({ id: "tc", toolName: "bash", result: "a" })],
       timestamp: 1,
     });
     const second = makeMessage({
-      stableId: "second",
+      id: "second",
       role: "assistant",
       toolCalls: [makeToolCall({ id: "tc", toolName: "bash", result: "b" })],
       timestamp: 2,
     });
     const result = sanitizeDisplayMessages([first, second]);
-    expect(result.map((m) => m.stableId)).toEqual(["first", "second"]);
+    expect(result.map((m) => m.id)).toEqual(["first", "second"]);
   });
 
   test("keeps both rows when tool call counts differ", () => {
     const first = makeMessage({
-      stableId: "first",
+      id: "first",
       role: "assistant",
       toolCalls: [makeToolCall({ id: "tc", toolName: "bash", result: "x" })],
       timestamp: 1,
     });
     const second = makeMessage({
-      stableId: "second",
+      id: "second",
       role: "assistant",
       toolCalls: [
         makeToolCall({ id: "tc-a", toolName: "bash", result: "x" }),
@@ -298,77 +294,77 @@ describe("sanitizeDisplayMessages · drop trailing assistant duplicate", () => {
       timestamp: 2,
     });
     const result = sanitizeDisplayMessages([first, second]);
-    expect(result.map((m) => m.stableId)).toEqual(["first", "second"]);
+    expect(result.map((m) => m.id)).toEqual(["first", "second"]);
   });
 
   test("does not look beyond the trailing pair", () => {
     // Three identical assistant rows in a row — only the very last one is
     // dropped, not the middle one. The hack is intentionally narrow.
     const a = makeMessage({
-      stableId: "a",
+      id: "a",
       role: "assistant",
       textSegments: [{ type: "text", content: "Same" }],
       timestamp: 1,
     });
     const b = makeMessage({
-      stableId: "b",
+      id: "b",
       role: "assistant",
       textSegments: [{ type: "text", content: "Same" }],
       timestamp: 2,
     });
     const c = makeMessage({
-      stableId: "c",
+      id: "c",
       role: "assistant",
       textSegments: [{ type: "text", content: "Same" }],
       timestamp: 3,
     });
     const result = sanitizeDisplayMessages([a, b, c]);
-    expect(result.map((m) => m.stableId)).toEqual(["a", "b"]);
+    expect(result.map((m) => m.id)).toEqual(["a", "b"]);
   });
 
   test("handles two assistant rows with no tool calls and matching segments", () => {
     const first = makeMessage({
-      stableId: "first",
+      id: "first",
       role: "assistant",
       textSegments: [{ type: "text", content: "Hi" }],
       timestamp: 1,
     });
     const second = makeMessage({
-      stableId: "second",
+      id: "second",
       role: "assistant",
       textSegments: [{ type: "text", content: "Hi" }],
       timestamp: 2,
     });
     const result = sanitizeDisplayMessages([first, second]);
-    expect(result.map((m) => m.stableId)).toEqual(["first"]);
+    expect(result.map((m) => m.id)).toEqual(["first"]);
   });
 
   test("handles two assistant rows with no segments and matching tool calls", () => {
     const first = makeMessage({
-      stableId: "first",
+      id: "first",
       role: "assistant",
       toolCalls: [makeToolCall({ id: "tc", toolName: "bash", result: "x" })],
       timestamp: 1,
     });
     const second = makeMessage({
-      stableId: "second",
+      id: "second",
       role: "assistant",
       toolCalls: [makeToolCall({ id: "tc", toolName: "bash", result: "x" })],
       timestamp: 2,
     });
     const result = sanitizeDisplayMessages([first, second]);
-    expect(result.map((m) => m.stableId)).toEqual(["first"]);
+    expect(result.map((m) => m.id)).toEqual(["first"]);
   });
 
   test("single-message arrays are returned unchanged", () => {
     const only = makeMessage({
-      stableId: "only",
+      id: "only",
       role: "assistant",
       content: "lonely",
       timestamp: 1,
     });
     const result = sanitizeDisplayMessages([only]);
-    expect(result.map((m) => m.stableId)).toEqual(["only"]);
+    expect(result.map((m) => m.id)).toEqual(["only"]);
   });
 
   test("empty arrays are returned unchanged", () => {
@@ -386,7 +382,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
 
   test("patches a running tool call on an older assistant when a later assistant exists", () => {
     const older = makeMessage({
-      stableId: "a-old",
+      id: "a-old",
       role: "assistant",
       timestamp: 100,
       toolCalls: [
@@ -394,7 +390,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
       ],
     });
     const later = makeMessage({
-      stableId: "a-new",
+      id: "a-new",
       role: "assistant",
       content: "follow-up",
       timestamp: 200,
@@ -414,13 +410,13 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
 
   test("does NOT patch the last assistant — it could still be streaming", () => {
     const userMsg = makeMessage({
-      stableId: "u",
+      id: "u",
       role: "user",
       content: "go",
       timestamp: 100,
     });
     const last = makeMessage({
-      stableId: "a-last",
+      id: "a-last",
       role: "assistant",
       timestamp: 200,
       toolCalls: [
@@ -434,7 +430,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
 
   test("does NOT patch when only a subsequent USER message exists (no assistant proof)", () => {
     const onlyAssistant = makeMessage({
-      stableId: "a-only",
+      id: "a-only",
       role: "assistant",
       timestamp: 100,
       toolCalls: [
@@ -442,7 +438,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
       ],
     });
     const trailingUser = makeMessage({
-      stableId: "u",
+      id: "u",
       role: "user",
       content: "ping",
       timestamp: 200,
@@ -454,7 +450,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
 
   test("patches across an intervening user message", () => {
     const a1 = makeMessage({
-      stableId: "a1",
+      id: "a1",
       role: "assistant",
       timestamp: 100,
       toolCalls: [
@@ -462,13 +458,13 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
       ],
     });
     const u = makeMessage({
-      stableId: "u",
+      id: "u",
       role: "user",
       content: "more",
       timestamp: 200,
     });
     const a2 = makeMessage({
-      stableId: "a2",
+      id: "a2",
       role: "assistant",
       content: "result",
       timestamp: 300,
@@ -480,7 +476,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
 
   test("leaves `status: 'completed'` tool calls alone (not dangling)", () => {
     const older = makeMessage({
-      stableId: "a-old",
+      id: "a-old",
       role: "assistant",
       timestamp: 100,
       toolCalls: [
@@ -493,7 +489,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
       ],
     });
     const later = makeMessage({
-      stableId: "a-new",
+      id: "a-new",
       role: "assistant",
       content: "follow-up",
       timestamp: 200,
@@ -507,7 +503,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
 
   test("leaves `status: 'error'` tool calls alone (already terminal)", () => {
     const older = makeMessage({
-      stableId: "a-old",
+      id: "a-old",
       role: "assistant",
       timestamp: 100,
       toolCalls: [
@@ -521,7 +517,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
       ],
     });
     const later = makeMessage({
-      stableId: "a-new",
+      id: "a-new",
       role: "assistant",
       content: "ok",
       timestamp: 200,
@@ -533,7 +529,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
 
   test("patches only the running tool, leaves siblings on the same message alone", () => {
     const older = makeMessage({
-      stableId: "a-old",
+      id: "a-old",
       role: "assistant",
       timestamp: 100,
       toolCalls: [
@@ -553,7 +549,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
       ],
     });
     const later = makeMessage({
-      stableId: "a-new",
+      id: "a-new",
       role: "assistant",
       content: "done",
       timestamp: 200,
@@ -568,7 +564,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
 
   test("patches multiple older assistants in a row", () => {
     const a1 = makeMessage({
-      stableId: "a1",
+      id: "a1",
       role: "assistant",
       timestamp: 100,
       toolCalls: [
@@ -576,7 +572,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
       ],
     });
     const a2 = makeMessage({
-      stableId: "a2",
+      id: "a2",
       role: "assistant",
       timestamp: 200,
       toolCalls: [
@@ -584,7 +580,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
       ],
     });
     const a3 = makeMessage({
-      stableId: "a3",
+      id: "a3",
       role: "assistant",
       content: "done",
       timestamp: 300,
@@ -598,13 +594,13 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
   test("does not mutate the input messages or tool-call objects", () => {
     const tc = makeToolCall({ id: "tc", toolName: "bash", status: "running" });
     const older = makeMessage({
-      stableId: "a-old",
+      id: "a-old",
       role: "assistant",
       timestamp: 100,
       toolCalls: [tc],
     });
     const later = makeMessage({
-      stableId: "a-new",
+      id: "a-new",
       role: "assistant",
       content: "ok",
       timestamp: 200,
@@ -621,7 +617,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
     // the same reference. Confirms the repair step is COW at the message
     // boundary when nothing needs patching.
     const a1 = makeMessage({
-      stableId: "a1",
+      id: "a1",
       role: "assistant",
       timestamp: 100,
       toolCalls: [
@@ -634,7 +630,7 @@ describe("sanitizeDisplayMessages · repair dangling tool calls", () => {
       ],
     });
     const a2 = makeMessage({
-      stableId: "a2",
+      id: "a2",
       role: "assistant",
       content: "done",
       timestamp: 200,
@@ -657,7 +653,7 @@ describe("sanitizeDisplayMessages · integration", () => {
   test("sort → invalid filter → trailing-dup drop → dangling-tool repair runs in order", () => {
     // Construct a messy input that exercises all four hacks at once.
     const phantom = makeMessage({
-      stableId: "phantom",
+      id: "phantom",
       role: "user",
       content: "",
       toolCalls: [
@@ -666,7 +662,7 @@ describe("sanitizeDisplayMessages · integration", () => {
       timestamp: 50,
     });
     const userTurn = makeMessage({
-      stableId: "user",
+      id: "user",
       role: "user",
       content: "What's the answer?",
       timestamp: 100,
@@ -674,7 +670,7 @@ describe("sanitizeDisplayMessages · integration", () => {
     // An older assistant message with a running tool call — its `tool_result`
     // event was lost in transit. We expect hack #4 to patch this.
     const olderWithDangling = makeMessage({
-      stableId: "older",
+      id: "older",
       role: "assistant",
       textSegments: [{ type: "text", content: "let me check" }],
       toolCalls: [
@@ -684,15 +680,14 @@ describe("sanitizeDisplayMessages · integration", () => {
     });
     // The "real" assistant turn (server-assigned id).
     const server = makeMessage({
-      stableId: "server-abc",
       id: "msg-1",
       role: "assistant",
       textSegments: [{ type: "text", content: "42" }],
       timestamp: 200,
     });
-    // The duplicate orphan emission (no id, "assistant-…" stableId).
+    // The duplicate orphan emission (a synthesized optimistic-style id).
     const orphan = makeMessage({
-      stableId: "assistant-abc",
+      id: "assistant-abc",
       role: "assistant",
       textSegments: [{ type: "text", content: "42" }],
       timestamp: 200,
@@ -716,10 +711,10 @@ describe("sanitizeDisplayMessages · integration", () => {
     //   - trailing orphan dropped by hack #3 (matches `server` on text + tool calls),
     //   - olderWithDangling's running tool call patched by hack #4 because
     //     `server` is a later assistant.
-    expect(result.map((m) => m.stableId)).toEqual([
+    expect(result.map((m) => m.id)).toEqual([
       "user",
       "older",
-      "server-abc",
+      "msg-1",
     ]);
     const patchedTool = result[1]!.toolCalls![0]!;
     expect(patchedTool.status).toBe("error");
