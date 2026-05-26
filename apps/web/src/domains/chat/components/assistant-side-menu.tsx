@@ -49,6 +49,8 @@ export interface AssistantSideMenuProps extends UseSidebarStateParams {
   assistantName?: string | null;
   collapsed: boolean;
   variant: "rail" | "overlay";
+  width?: number;
+  onWidthChange?: (width: number) => void;
   activeConversationId?: string;
   onSelectConversation: (key: string) => void;
   isIntelligenceActive?: boolean;
@@ -105,6 +107,8 @@ export function AssistantSideMenu({
   assistantName,
   collapsed,
   variant,
+  width,
+  onWidthChange,
   conversations,
   activeConversationId,
   onSelectConversation,
@@ -339,6 +343,8 @@ export function AssistantSideMenu({
       ariaLabel="Assistant navigation"
       collapsed={collapsed}
       variant={variant}
+      width={width}
+      onWidthChange={onWidthChange}
       className="h-full"
     >
       <SideMenu.Header>
