@@ -45,9 +45,12 @@ export default defineConfig(({ mode }) => {
       }),
     ],
     resolve: {
-      alias: {
-        "@/": path.resolve(import.meta.dirname, "src") + "/",
-      },
+      alias: [
+        {
+          find: /^@\//,
+          replacement: path.resolve(import.meta.dirname, "src") + "/",
+        },
+      ],
       preserveSymlinks: true,
     },
     server: {

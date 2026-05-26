@@ -27,7 +27,9 @@ import type {
   SubagentStatus,
   UISurfaceShowEvent,
 } from "@/domains/chat/api/event-types.js";
+import { RelationshipStateUpdatedSchema } from "@vellumai/assistant-api";
 import type { DisplayAttachment } from "@/domains/chat/types/types.js";
+import { isConversationScopedStreamEvent } from "@/domains/chat/utils/chat-utils.js";
 import type { ToolActivityMetadata } from "@/assistant/web-activity-types.js";
 import type { SyncInvalidationTag } from "@/lib/sync/types.js";
 
@@ -43,15 +45,19 @@ export function readEventConversationId(
   return undefined;
 }
 
-function withParsedConversationId<T extends AssistantEvent>(
-  event: T,
+function withParsedConversationId(
+  event: AssistantEvent,
   data: Record<string, unknown>,
-): T {
+): AssistantEvent {
+  // Skip for global events whose wire schemas don't declare conversationId
+  // (e.g. `relationship_state_updated`). Stamping the envelope-derived
+  // conversationId onto a strict wire type is the exact drift this package
+  // is meant to eliminate.
+  if (!isConversationScopedStreamEvent(event)) return event;
   const conversationId = readEventConversationId(data);
-  if (!conversationId || event.conversationId) {
-    return event;
-  }
-  return { ...event, conversationId } as T;
+  if (!conversationId) return event;
+  if (event.conversationId) return event;
+  return { ...event, conversationId };
 }
 
 /**
@@ -576,11 +582,14 @@ export function parseAssistantEvent(
         newItemCount: typeof data.newItemCount === "number" ? data.newItemCount : 0,
       };
 
-    case "relationship_state_updated":
-      return {
-        type: "relationship_state_updated",
-        updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : "",
-      };
+    case "relationship_state_updated": {
+      const result = RelationshipStateUpdatedSchema.safeParse({
+        type: rawType,
+        updatedAt: data.updatedAt,
+      });
+      if (!result.success) return { type: "unknown", rawType, data };
+      return result.data;
+    }
 
     case "subagent_spawned": {
       const subagentId = typeof data.subagentId === "string" ? data.subagentId : "";
