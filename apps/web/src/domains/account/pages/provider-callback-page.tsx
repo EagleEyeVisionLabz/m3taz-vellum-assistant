@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
+import * as Sentry from "@sentry/react";
 
 import { AccountHeading } from "@/components/account/account-form.js";
 import { AccountShell } from "@/components/account/account-shell.js";
@@ -53,6 +54,26 @@ function redirectToNativeApp(
   const { scheme, state } = nativeParams;
   window.location.href = `${scheme}://auth/callback?error=${encodeURIComponent(error)}&state=${encodeURIComponent(state)}`;
 }
+
+/**
+ * True if the current browser is iOS or iPadOS. iPadOS 13+ reports a
+ * Macintosh user agent by default, so we disambiguate via
+ * `maxTouchPoints > 1` on a Mac platform — real Macs report 0 or 1.
+ * `"ontouchend" in document` is NOT a reliable touch-device signal on
+ * desktop Safari (the API exists on desktop too), which is why we don't
+ * use it. Same discriminator as `isIOSBrowser` in
+ * `domains/nudges/ios-app-platform.ts`.
+ *
+ * Ref: https://developer.apple.com/forums/thread/119186
+ */
+function isIOSBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/.test(ua)) return true;
+  const isMacPlatform = navigator.platform.toLowerCase().includes("mac");
+  return isMacPlatform && navigator.maxTouchPoints > 1;
+}
+
 
 /**
  * OAuth provider callback handler. Probes the allauth session after the
@@ -118,26 +139,24 @@ export function ProviderCallbackPage() {
             break;
           }
           case "error":
-            if (nativeParams) {
-              // TEMPORARY DEBUG (revert once iOS sign-in cache-miss is
-              // diagnosed): suppress the redirect-back-to-native so the
-              // Safari sheet stays open and the actual getSession()
-              // failure mode is inspectable. Without this, ASWebAuth
-              // catches the scheme:// redirect, closes the sheet, and
-              // destroys the Web Inspector window before anything can
-              // be read.
-              console.log("[debug native auth] getSession result:", result);
-              console.log("[debug native auth] classification outcome:", outcome);
-              console.log("[debug native auth] nativeParams:", nativeParams);
-              setFallbackError(
-                `[debug] ${outcome.message} :: result=${JSON.stringify(result).slice(0, 800)}`,
-              );
+            // Skip the native-scheme bounce on iOS only: it tears the
+            // `ASWebAuthenticationSession` Safari sheet down before
+            // WebKit finishes committing the session cookie set by
+            // allauth's social callback, turning a recoverable
+            // post-WorkOS failure into a permanent one. macOS does
+            // not exhibit this and still needs the bounce so its
+            // auth sheet closes cleanly into the native UI.
+            if (nativeParams && !isIOSBrowser()) {
+              redirectToNativeApp(nativeParams, outcome.message);
               return;
             }
             setFallbackError(outcome.message);
             break;
         }
-      } catch {
+      } catch (err) {
+        Sentry.captureException(err, {
+          tags: { context: "provider_callback" },
+        });
         setFallbackError("Something went wrong. Please try signing in again.");
       }
     })();
