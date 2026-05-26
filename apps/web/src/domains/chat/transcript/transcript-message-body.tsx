@@ -15,6 +15,7 @@ import { MessageHoverActions } from "@/domains/chat/components/message-hover-act
 import { SurfaceRouter } from "@/domains/chat/components/surfaces/surface-router.js";
 import { ToolCallProgressCard } from "@/domains/chat/components/tool-call-progress-card/tool-call-progress-card.js";
 import type { DisplayMessage } from "@/domains/chat/utils/reconcile.js";
+import { parseInlineSurfaces } from "@/domains/chat/utils/parse-inline-surfaces.js";
 import { getSlackLinkUrl, type Surface } from "@/domains/chat/types/types.js";
 import { isPointerCoarse } from "@/utils/pointer.js";
 import type { AllowlistOption, ChatMessageToolCall, ConfirmationDecision, DirectoryScopeOption, ScopeOption } from "@/domains/chat/api/event-types.js";
@@ -298,6 +299,45 @@ export function TranscriptMessageBody({
     (tc.toolName === "ui_show" || tc.toolName === "ui_update" || tc.toolName === "ui_dismiss");
   const messageTimestamp = latestMessageActivityTimestamp(message);
 
+  const renderTextWithInlineSurfaces = (text: string, key: string, hardLineBreaks: boolean) => {
+    const inlineSegments = parseInlineSurfaces(text);
+    if (inlineSegments) {
+      return (
+        <div key={key} className="w-full">
+          {inlineSegments.map((seg, si) => {
+            if (seg.type === "surface") {
+              return (
+                <div key={`inline-surface-${si}`} className="my-2 w-full">
+                  <SurfaceRouter
+                    surface={seg.surface}
+                    onAction={() => {}}
+                    onOpenApp={onOpenApp}
+                    onOpenDocument={onOpenDocument}
+                    assistantId={assistantId}
+                    isToolCallComplete={true}
+                  />
+                </div>
+              );
+            }
+            return (
+              <div
+                key={`inline-text-${si}`}
+                className={`break-words text-[15px] ${textBubbleClass}`}
+              >
+                <ChatMarkdownMessage content={seg.content} hardLineBreaks={hardLineBreaks} />
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+    return (
+      <div key={key} className={`break-words text-[15px] ${textBubbleClass}`}>
+        <ChatMarkdownMessage content={text} hardLineBreaks={hardLineBreaks} />
+      </div>
+    );
+  };
+
   if (hasInterleavedToolCalls && message.contentOrder) {
     // Group consecutive entries: merge adjacent toolCall/tool entries into a
     // single group (mirrors macOS `groupContentBlocks`).
@@ -384,14 +424,7 @@ export function TranscriptMessageBody({
               if (!text) {
                 return null;
               }
-              return (
-                <div
-                  key={`text-${gi}`}
-                  className={`text-[15px] break-words ${textBubbleClass}`}
-                >
-                  <ChatMarkdownMessage content={text} hardLineBreaks={message.role === "user"} />
-                </div>
-              );
+              return renderTextWithInlineSurfaces(text, `text-${gi}`, message.role === "user");
             }
             if (group.type === "surface") {
               const surface = resolveSurface(group.id);
@@ -416,13 +449,9 @@ export function TranscriptMessageBody({
           {/* Fallback: if message.content exists but no text groups rendered
               (e.g. tool_use_start before any assistant_text_delta), show the
               content. */}
-          {!groups.some((g) => g.type === "text") && message.content && (
-            <div
-              className={`text-[15px] break-words ${textBubbleClass}`}
-            >
-              <ChatMarkdownMessage content={message.content} hardLineBreaks={message.role === "user"} />
-            </div>
-          )}
+          {!groups.some((g) => g.type === "text") && message.content &&
+            renderTextWithInlineSurfaces(message.content, "fallback", message.role === "user")
+          }
           {message.attachments && message.attachments.length > 0 && (
             <MessageAttachments
               attachments={message.attachments}
@@ -463,7 +492,7 @@ export function TranscriptMessageBody({
             );
         const segText = seg?.content ?? entry.id;
         contentElements.push(
-          <ChatMarkdownMessage key={`text-${entry.id}`} content={segText} hardLineBreaks={message.role === "user"} />,
+          renderTextWithInlineSurfaces(segText, `text-${entry.id}`, message.role === "user"),
         );
       } else if (entry.type === "surface") {
         const surface = resolveSurface(entry.id);
@@ -485,14 +514,14 @@ export function TranscriptMessageBody({
     }
     if (contentElements.length === 0 && message.content) {
       contentElements.push(
-        <ChatMarkdownMessage key="fallback" content={message.content} hardLineBreaks={message.role === "user"} />,
+        renderTextWithInlineSurfaces(message.content, "fallback", message.role === "user"),
       );
     }
   } else {
     contentElements.push(
-      message.content ? (
-        <ChatMarkdownMessage key="content" content={message.content} hardLineBreaks={message.role === "user"} />
-      ) : null,
+      message.content
+        ? renderTextWithInlineSurfaces(message.content, "content", message.role === "user")
+        : null,
     );
   }
 
