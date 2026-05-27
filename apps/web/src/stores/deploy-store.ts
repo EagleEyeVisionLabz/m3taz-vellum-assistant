@@ -1,16 +1,13 @@
 /**
  * Zustand store for the app share/deploy lifecycle.
  *
- * Owns the in-flight UI state for two operations on the app viewer:
- * - **Share** — export the current app to a `.vellum` bundle.
- * - **Deploy** — publish the app to Vercel (with an intermediate token
+ * Owns the in-flight UI state for two operations:
+ * - **Share** — export an app to a `.vellum` bundle.
+ * - **Deploy** — publish an app to Vercel (with an intermediate token
  *   dialog when the org doesn't yet have a Vercel token stored).
  *
- * Split out from `useViewerStore` because none of these fields relate
- * to navigation (`mainView`, `intelligenceTab`) or viewer lifecycle
- * (`openedAppState`, `openedDocumentState`); they form an independent
- * data concern and only ship together with the app-share/deploy code
- * paths.
+ * Used by both the chat-page app viewer and the library page — lives
+ * in `stores/` because it is cross-domain shared state.
  *
  * Reference: {@link https://zustand.docs.pmnd.rs/}
  */
@@ -18,9 +15,12 @@
 import { create } from "zustand";
 
 import { toast } from "@vellum/design-library";
-import { shareApp as shareAppApi } from "@/lib/apps-api";
-import { getVercelConfig, isCredentialError, publishApp } from "@/lib/publish-api";
+import { integrationsVercelConfigGet } from "@/generated/daemon/sdk.gen";
+import type { AppsByIdPublishPostResponse } from "@/generated/daemon/types.gen";
+import { isCredentialError } from "@/types/publish-types";
 import { createSelectors } from "@/utils/create-selectors";
+import { publishApp } from "@/utils/publish-app";
+import { shareApp as shareAppApi } from "@/utils/share-app";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,6 +58,24 @@ export interface DeployActions {
 }
 
 export type DeployStore = DeployState & DeployActions;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function showPublishResultToast(result: AppsByIdPublishPostResponse): void {
+  if (result.publicUrl) {
+    toast.success("Deployed to Vercel", {
+      description: result.publicUrl,
+      action: {
+        label: "Open",
+        onClick: () => window.open(result.publicUrl, "_blank"),
+      },
+    });
+  } else {
+    toast.success("Deployed to Vercel");
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Initial state
@@ -125,7 +143,10 @@ const useDeployStoreBase = create<DeployStore>()((set, get) => ({
     }
     set({ isDeploying: true });
     try {
-      const config = await getVercelConfig(assistantId);
+      const { data: config } = await integrationsVercelConfigGet({
+        path: { assistant_id: assistantId },
+        throwOnError: true,
+      });
       if (!config.hasToken) {
         set({ isTokenDialogOpen: true, pendingDeployAppId: appId, isDeploying: false });
         return;
@@ -137,16 +158,8 @@ const useDeployStoreBase = create<DeployStore>()((set, get) => ({
         } else {
           toast.error("Failed to deploy", { description: result.error });
         }
-      } else if (result.publicUrl) {
-        toast.success("Deployed to Vercel", {
-          description: result.publicUrl,
-          action: {
-            label: "Open",
-            onClick: () => window.open(result.publicUrl, "_blank"),
-          },
-        });
       } else {
-        toast.success("Deployed to Vercel");
+        showPublishResultToast(result);
       }
     } catch (err) {
       toast.error("Failed to deploy", {
@@ -166,16 +179,8 @@ const useDeployStoreBase = create<DeployStore>()((set, get) => ({
       const result = await publishApp(assistantId, pendingDeployAppId);
       if (!result.success) {
         toast.error("Failed to deploy", { description: result.error });
-      } else if (result.publicUrl) {
-        toast.success("Deployed to Vercel", {
-          description: result.publicUrl,
-          action: {
-            label: "Open",
-            onClick: () => window.open(result.publicUrl, "_blank"),
-          },
-        });
       } else {
-        toast.success("Deployed to Vercel");
+        showPublishResultToast(result);
       }
     } catch (err) {
       toast.error("Failed to deploy", {
