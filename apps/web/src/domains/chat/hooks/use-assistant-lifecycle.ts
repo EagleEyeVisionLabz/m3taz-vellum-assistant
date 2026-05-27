@@ -18,6 +18,7 @@ import {
 } from "@/assistant/lifecycle";
 import { resolveOnboardingRedirect } from "@/domains/onboarding/gate";
 import { isGatewayAuthMode, getGatewayToken } from "@/lib/auth/gateway-session";
+import { getSelectedAssistant, getLocalGatewayUrl } from "@/lib/local-mode";
 import { setSelfHostedConnection } from "@/lib/self-hosted/connection";
 import { routes } from "@/utils/routes";
 
@@ -189,6 +190,7 @@ export function useAssistantLifecycle({
   }, []);
 
   const checkAssistant = useCallback(async () => {
+    if (isGatewayAuthMode()) return;
     const generation = initializingGenerationRef.current;
     try {
       const result = await getAssistant();
@@ -398,18 +400,28 @@ export function useAssistantLifecycle({
     if (!isLoggedIn || isLoading) {
       return;
     }
+    if (isGatewayAuthMode()) {
+      let ingressUrl = window.location.origin;
+      let assistantId = "self";
+
+      const localGateway = getLocalGatewayUrl();
+      if (localGateway) {
+        const assistant = getSelectedAssistant();
+        ingressUrl = `${window.location.origin}${localGateway}`;
+        assistantId = assistant?.assistantId ?? assistantId;
+      }
+
+      setSelfHostedConnection({
+        url: ingressUrl,
+        token: getGatewayToken(),
+      });
+      setAssistantId(assistantId);
+      setAssistantState({ kind: "active", isLocal: true });
+      return;
+    }
     if (hasPlatformSession) {
       setSelfHostedConnection(null);
       checkAssistant();
-      return;
-    }
-    if (isGatewayAuthMode()) {
-      setSelfHostedConnection({
-        url: window.location.origin,
-        token: getGatewayToken(),
-      });
-      setAssistantId("self");
-      setAssistantState({ kind: "active", isLocal: true });
       return;
     }
     checkAssistant();

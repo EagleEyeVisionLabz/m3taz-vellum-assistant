@@ -1,12 +1,21 @@
 import { useClientFeatureFlagStore } from "@/lib/feature-flags/client-feature-flag-store";
+import {
+  isLocalMode,
+  getLocalGatewayUrl,
+} from "@/lib/local-mode";
 
 const LS_TOKEN_KEY = "gw:token";
 const LS_EXPIRES_KEY = "gw:expiresAt";
+const LS_TOKEN_SOURCE_KEY = "gw:tokenSource";
 
 let cachedToken: string | null = null;
 let cachedExpiresAt: number = 0;
+let cachedTokenSource: string | null = null;
 
 export function isGatewayAuthEnabled(): boolean {
+  if (isLocalMode()) {
+    return getLocalGatewayUrl() != null;
+  }
   return useClientFeatureFlagStore.getState().gatewayWebAuth === true;
 }
 
@@ -40,8 +49,9 @@ export function getGatewayToken(): string | null {
   return null;
 }
 
-async function acquireGatewayToken(): Promise<string> {
-  const res = await fetch("/auth/token", { method: "POST" });
+async function acquireGatewayToken(tokenUrl?: string): Promise<string> {
+  const url = tokenUrl ?? "/auth/token";
+  const res = await fetch(url, { method: "POST" });
   if (!res.ok) {
     throw new Error(`Gateway token request failed: ${res.status}`);
   }
@@ -52,26 +62,41 @@ async function acquireGatewayToken(): Promise<string> {
   try {
     localStorage.setItem(LS_TOKEN_KEY, token);
     localStorage.setItem(LS_EXPIRES_KEY, String(expiresAt));
+    localStorage.setItem(LS_TOKEN_SOURCE_KEY, url);
   } catch {
     // localStorage unavailable
   }
   cachedToken = token;
   cachedExpiresAt = expiresAt;
+  cachedTokenSource = url;
   return token;
 }
 
-export async function ensureGatewayToken(): Promise<string> {
+export async function ensureGatewayToken(tokenUrl?: string): Promise<string> {
+  const source = tokenUrl ?? "/auth/token";
+  const storedSource = cachedTokenSource ?? localStorage.getItem(LS_TOKEN_SOURCE_KEY);
+  if (storedSource && storedSource !== source) {
+    clearGatewayToken();
+  }
   const existing = getGatewayToken();
   if (existing) return existing;
-  return acquireGatewayToken();
+  return acquireGatewayToken(tokenUrl);
+}
+
+export function getLocalTokenUrl(): string | undefined {
+  const gatewayUrl = getLocalGatewayUrl();
+  if (!gatewayUrl) return undefined;
+  return `${gatewayUrl}/auth/token`;
 }
 
 export function clearGatewayToken(): void {
   cachedToken = null;
   cachedExpiresAt = 0;
+  cachedTokenSource = null;
   try {
     localStorage.removeItem(LS_TOKEN_KEY);
     localStorage.removeItem(LS_EXPIRES_KEY);
+    localStorage.removeItem(LS_TOKEN_SOURCE_KEY);
   } catch {
     // localStorage unavailable
   }
