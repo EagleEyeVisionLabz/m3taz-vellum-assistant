@@ -17,6 +17,7 @@ import {
   shouldRecoverFromHatchFailure,
 } from "@/assistant/lifecycle";
 import { resolveOnboardingRedirect } from "@/domains/onboarding/gate";
+import { isGatewayAuthMode, getGatewayToken } from "@/lib/auth/gateway-session";
 import { setSelfHostedConnection } from "@/lib/self-hosted/connection";
 import { routes } from "@/utils/routes";
 
@@ -49,6 +50,7 @@ interface UseAssistantLifecycleOptions {
   isLoading: boolean;
   isRetired: boolean;
   isNonProduction: boolean;
+  hasPlatformSession: boolean;
   /** Framework-agnostic redirect — called instead of router.replace(). */
   onRedirect: (url: string) => void;
 }
@@ -84,6 +86,7 @@ export function useAssistantLifecycle({
   isLoading,
   isRetired,
   isNonProduction,
+  hasPlatformSession,
   onRedirect,
 }: UseAssistantLifecycleOptions): UseAssistantLifecycleReturn {
   const [assistantState, setAssistantState] = useState<AssistantState>({
@@ -395,9 +398,22 @@ export function useAssistantLifecycle({
     if (!isLoggedIn || isLoading) {
       return;
     }
-    // Async check — setState happens after await, not synchronously
+    if (hasPlatformSession) {
+      setSelfHostedConnection(null);
+      checkAssistant();
+      return;
+    }
+    if (isGatewayAuthMode()) {
+      setSelfHostedConnection({
+        url: window.location.origin,
+        token: getGatewayToken(),
+      });
+      setAssistantId("self");
+      setAssistantState({ kind: "active", isLocal: true });
+      return;
+    }
     checkAssistant();
-  }, [isLoggedIn, isLoading, checkAssistant]);
+  }, [isLoggedIn, isLoading, hasPlatformSession, checkAssistant]);
 
   // Poll while initializing or cleaning up
   useEffect(() => {

@@ -68,17 +68,19 @@ export function RootLayout() {
   const navigate = useNavigate();
   const isLoggedIn = useAuthStore.use.isLoggedIn();
   const authLoading = useAuthStore.use.isLoading();
+  const hasPlatformSession = useAuthStore.use.hasPlatformSession();
   const isNonProduction = useEnvironmentStore.use.isNonProduction();
-  useClientFeatureFlagSync(isLoggedIn && !authLoading);
+  useClientFeatureFlagSync(hasPlatformSession && !authLoading);
   const lifecycle = useAssistantLifecycle({
     isLoggedIn,
     isLoading: authLoading,
     isRetired: false,
     isNonProduction,
+    hasPlatformSession,
     onRedirect: navigate,
   });
 
-  useAssistantFeatureFlagSync(lifecycle.assistantId);
+  useAssistantFeatureFlagSync(hasPlatformSession ? lifecycle.assistantId : null);
   useAssistantSyncStream(
     lifecycle.assistantId,
     lifecycle.assistantState.kind === "active",
