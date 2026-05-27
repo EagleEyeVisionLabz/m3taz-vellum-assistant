@@ -6,7 +6,11 @@
  * consumed by event-parser.ts and the stream handler domain modules.
  */
 
-import type { RelationshipStateUpdatedEvent } from "@vellumai/assistant-api";
+import type {
+  AssistantTurnStartEvent,
+  RelationshipStateUpdatedEvent,
+  ToolUseStartEvent,
+} from "@vellumai/assistant-api";
 import type { DiskPressureStatus } from "@/assistant/types";
 import type { Surface } from "@/domains/chat/types/types";
 import type { ToolActivityMetadata } from "@/assistant/web-activity-types";
@@ -29,6 +33,13 @@ import type {
   SubagentInnerEvent,
   SubagentStatus,
 } from "@/types/interaction-ui-types";
+
+// Re-export canonical event types under the web side's existing names so
+// downstream importers continue working unchanged. The canonical schema in
+// `@vellumai/assistant-api` is the source of truth; the inline declarations
+// here that haven't been migrated yet are gradually getting replaced with
+// imports of this shape.
+export type { AssistantTurnStartEvent, ToolUseStartEvent };
 
 /** Data needed to render an inline permission prompt inside a ToolCallChip. */
 export interface PendingToolConfirmation {
@@ -296,14 +307,6 @@ export interface UISurfaceCompleteEvent {
   conversationId?: string;
 }
 
-export interface ToolUseStartEvent {
-  type: "tool_use_start";
-  toolName: string;
-  input: Record<string, unknown>;
-  toolUseId?: string;
-  conversationId?: string;
-}
-
 export interface ToolResultEvent {
   type: "tool_result";
   toolName: string;
@@ -311,6 +314,9 @@ export interface ToolResultEvent {
   isError?: boolean;
   toolUseId?: string;
   conversationId?: string;
+  /** Database ID of the assistant message that owns the parent tool_use
+   *  block. Same semantics as `AssistantTextDeltaEvent.messageId`. */
+  messageId?: string;
   riskLevel?: string;
   riskReason?: string;
   matchedTrustRuleId?: string;
@@ -713,6 +719,7 @@ export interface InteractionResolvedEvent {
 }
 
 export type AssistantEvent =
+  | AssistantTurnStartEvent
   | AssistantTextDeltaEvent
   | MessageCompleteEvent
   | GenerationHandoffEvent

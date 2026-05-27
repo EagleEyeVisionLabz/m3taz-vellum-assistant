@@ -499,6 +499,8 @@ function parseLegacyEvent(data: Record<string, unknown>): AssistantEvent {
           ? (data.input as Record<string, unknown>)
           : {},
         toolUseId: typeof data.toolUseId === "string" ? data.toolUseId : undefined,
+        messageId:
+          typeof data.messageId === "string" ? data.messageId : undefined,
         conversationId:
           typeof data.conversationId === "string"
             ? data.conversationId
@@ -512,6 +514,8 @@ function parseLegacyEvent(data: Record<string, unknown>): AssistantEvent {
         result: typeof data.result === "string" ? data.result : "",
         isError: typeof data.isError === "boolean" ? data.isError : undefined,
         toolUseId: typeof data.toolUseId === "string" ? data.toolUseId : undefined,
+        messageId:
+          typeof data.messageId === "string" ? data.messageId : undefined,
         conversationId: typeof data.conversationId === "string" ? data.conversationId : undefined,
         riskLevel: typeof data.riskLevel === "string" ? data.riskLevel : undefined,
         riskReason: typeof data.riskReason === "string" ? data.riskReason : undefined,
