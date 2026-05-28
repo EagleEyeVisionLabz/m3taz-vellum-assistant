@@ -1085,7 +1085,7 @@ export async function runDaemon(): Promise<void> {
           // its own finally block.
           conversation.toolsDisabledDepth++;
           try {
-            const messageId = await conversation.persistUserMessage(
+            const { id: messageId } = await conversation.persistUserMessage(
               instruction,
               [],
               undefined,

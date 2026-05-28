@@ -1288,7 +1288,8 @@ export class Conversation {
     requestId?: string,
     metadata?: Record<string, unknown>,
     displayContent?: string,
-  ): Promise<string> {
+    clientMessageId?: string,
+  ): Promise<{ id: string; deduplicated: boolean }> {
     if (!this.processing) {
       await this.ensureActorScopedHistory();
     }
@@ -1299,6 +1300,7 @@ export class Conversation {
       requestId,
       metadata,
       displayContent,
+      clientMessageId,
     );
   }
 

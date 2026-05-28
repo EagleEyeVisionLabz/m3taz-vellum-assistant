@@ -1767,7 +1767,16 @@ export async function handleSendMessage(
         "user",
         JSON.stringify(cleanMsg.content),
         channelMeta,
+        undefined,
+        clientMessageId,
       );
+      if (persisted.deduplicated) {
+        return {
+          accepted: true,
+          messageId: persisted.id,
+          conversationId: mapping.conversationId,
+        };
+      }
       conversation.getMessages().push(llmMsg);
 
       const assistantMsg = createAssistantMessage(slashResult.message);
@@ -1866,6 +1875,8 @@ export async function handleSendMessage(
         "user",
         JSON.stringify(cleanMsg.content),
         channelMeta,
+        undefined,
+        clientMessageId,
       );
     } catch (err) {
       // The fire-and-forget compaction below owns clearing `processing`, but a
@@ -1874,6 +1885,15 @@ export async function handleSendMessage(
       conversation.processing = false;
       silentlyWithLog(conversation.drainQueue(), "compact-command queue drain");
       throw err;
+    }
+    if (persisted.deduplicated) {
+      conversation.processing = false;
+      silentlyWithLog(conversation.drainQueue(), "compact-dedup queue drain");
+      return {
+        accepted: true,
+        messageId: persisted.id,
+        conversationId: mapping.conversationId,
+      };
     }
     conversation.getMessages().push(cleanMsg);
 
@@ -1974,7 +1994,16 @@ export async function handleSendMessage(
         "user",
         JSON.stringify(cleanMsg.content),
         channelMeta,
+        undefined,
+        clientMessageId,
       );
+      if (persisted.deduplicated) {
+        return {
+          accepted: true,
+          messageId: persisted.id,
+          conversationId,
+        };
+      }
       conversation.getMessages().push(cleanMsg);
 
       let assistantMessagePersisted = false;
@@ -2040,16 +2069,23 @@ export async function handleSendMessage(
   const resolvedContent = slashResult.content;
 
   const requestId = crypto.randomUUID();
-  let messageId: string;
-  try {
-    messageId = await conversation.persistUserMessage(
-      resolvedContent,
-      attachments,
-      requestId,
-      body.automated === true ? { automated: true } : undefined,
-    );
-  } catch (err) {
-    throw err;
+  const persistResult = await conversation.persistUserMessage(
+    resolvedContent,
+    attachments,
+    requestId,
+    body.automated === true ? { automated: true } : undefined,
+    undefined,
+    clientMessageId,
+  );
+
+  const messageId = persistResult.id;
+
+  if (persistResult.deduplicated) {
+    return {
+      accepted: true,
+      messageId,
+      conversationId: mapping.conversationId,
+    };
   }
 
   broadcastMessage({
