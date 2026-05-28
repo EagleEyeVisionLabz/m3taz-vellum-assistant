@@ -10,7 +10,7 @@ import {
   getPresentCategories,
   groupByTime,
   sortFeedItems,
-} from "./utils/feed-utils";
+} from "./utils";
 import type {
   FeedItem,
   FeedItemCategory,

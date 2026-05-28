@@ -423,6 +423,19 @@ Do not use barrel files (`index.ts` that re-export siblings). Import
 from the source file directly. If you believe this rule should change,
 open a GitHub issue to discuss.
 
+### No single-file directories
+
+A directory that contains exactly one file should be flattened — move
+the file up one level and remove the empty directory. Directories
+exist to organize multiple files, not to wrap a single file.
+
+When flattening, verify the file lands in the **correct parent**
+directory, not just one level up. For example, a Zustand store nested
+in `domains/settings/stores/theme-store.ts` should move to the
+domain root (`domains/settings/theme-store.ts`) or to top-level
+`stores/` if it's cross-domain — not just flatten in place if the
+parent directory is wrong.
+
 ---
 
 ## State management
