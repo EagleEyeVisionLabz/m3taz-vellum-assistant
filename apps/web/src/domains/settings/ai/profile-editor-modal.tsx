@@ -565,6 +565,13 @@ function ProfileEditorModalInner({
       if (selectedConn?.auth.type === "oauth_subscription") {
         return catalogModels.filter((m) => CODEX_SUBSCRIPTION_MODEL_IDS.has(m.id));
       }
+      if (
+        !providerConnection &&
+        availableConnectionsForProvider.length > 0 &&
+        availableConnectionsForProvider.every((c) => c.auth.type === "oauth_subscription")
+      ) {
+        return catalogModels.filter((m) => CODEX_SUBSCRIPTION_MODEL_IDS.has(m.id));
+      }
       return catalogModels;
     }
     // Static catalog is empty (openai-compatible) — derive from connections.
@@ -596,6 +603,16 @@ function ProfileEditorModalInner({
     providerConnection,
     availableConnectionsForProvider,
   ]);
+
+  useEffect(() => {
+    if (
+      model &&
+      availableModels.length > 0 &&
+      !availableModels.some((m) => m.id === model)
+    ) {
+      setModel("");
+    }
+  }, [model, availableModels]);
 
   return (
     <Modal.Content size="md">
