@@ -22,7 +22,7 @@ import { useTurnStore } from "@/stores/turn-store";
 import { endTurn } from "@/stores/turn-coordinator";
 
 import { clearConfirmationByRequestId } from "@/domains/chat/hooks/send-message-utils";
-import { deriveCommandText } from "@/domains/chat/utils/chat-utils";
+import { deriveCommandText } from "@/domains/chat/utils/chat";
 import type { ChatError } from "@/domains/chat/types";
 import type { AllowlistOption, ConfirmationDecision, DirectoryScopeOption, QuestionResponseEntry, ScopeOption } from "@/domains/chat/api/event-types";
 import { submitConfirmation, submitContactPrompt, submitQuestionResponse, submitSecretResponse } from "@/domains/chat/api/interactions";
