@@ -38,6 +38,16 @@ mock.module("@/lib/streaming/stream-transport", () => ({
   subscribeChatEvents: subscribeChatEventsMock,
 }));
 
+// `useEventBusInit` reads `checkAssistant` from the lifecycle store at
+// resume time. Mock the store so tests can assert on the call without
+// running the real lifecycle hook.
+const checkAssistantMock = mock(async () => {});
+mock.module("@/assistant/lifecycle-store", () => ({
+  useAssistantLifecycleStore: {
+    getState: () => ({ checkAssistant: checkAssistantMock }),
+  },
+}));
+
 const { useEventBusInit } = await import("@/hooks/use-event-bus-init");
 
 beforeEach(() => {
@@ -48,6 +58,7 @@ beforeEach(() => {
   lastSubscribeArgs = null;
   cancelMock.mockClear();
   subscribeChatEventsMock.mockClear();
+  checkAssistantMock.mockClear();
 });
 
 afterEach(() => {
@@ -61,7 +72,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: false,
-        checkAssistant: () => {},
       }),
     );
     expect(subscribeChatEventsMock).not.toHaveBeenCalled();
@@ -72,7 +82,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: null,
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     expect(subscribeChatEventsMock).not.toHaveBeenCalled();
@@ -83,7 +92,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
@@ -100,7 +108,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     const event = { type: "avatar_updated" } as AssistantEvent;
@@ -115,7 +122,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     expect(handler).toHaveBeenCalledWith({
@@ -131,7 +137,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     handler.mockClear();
@@ -149,7 +154,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     activeOnError!(new Error("network error"));
@@ -161,7 +165,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     expect(cancelMock).not.toHaveBeenCalled();
@@ -176,7 +179,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     useEventBusStore
@@ -189,12 +191,10 @@ describe("useEventBusInit — SSE ownership", () => {
   });
 
   test("tears down SSE on app.hidden and reopens on app.resume after the dedup window", async () => {
-    const checkAssistant = mock(() => {});
     renderHook(() =>
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant,
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
@@ -208,7 +208,7 @@ describe("useEventBusInit — SSE ownership", () => {
       .getState()
       .publish("app.resume", { signal: "visibility" });
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(2);
-    expect(checkAssistant).toHaveBeenCalledTimes(1);
+    expect(checkAssistantMock).toHaveBeenCalledTimes(1);
   }, 5_000);
 
   test("power.suspend tears down a live SSE so the daemon sees us go away cleanly", () => {
@@ -216,7 +216,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
@@ -231,7 +230,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: null,
         isAssistantActive: false,
-        checkAssistant: () => {},
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(0);
@@ -243,12 +241,10 @@ describe("useEventBusInit — SSE ownership", () => {
   });
 
   test("power.resume bounces a LIVE SSE (no preceding app.hidden) — the tray-resident case", () => {
-    const checkAssistant = mock(() => {});
     renderHook(() =>
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant,
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
@@ -261,16 +257,14 @@ describe("useEventBusInit — SSE ownership", () => {
 
     expect(cancelMock).toHaveBeenCalledTimes(1);
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(2);
-    expect(checkAssistant).toHaveBeenCalledTimes(1);
+    expect(checkAssistantMock).toHaveBeenCalledTimes(1);
   });
 
   test("power.unlock bounces a LIVE SSE — screen lock can outlast TCP timeouts", () => {
-    const checkAssistant = mock(() => {});
     renderHook(() =>
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant,
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
@@ -282,12 +276,10 @@ describe("useEventBusInit — SSE ownership", () => {
   });
 
   test("power.resume reopens the SSE after teardown — same dedup window as app.resume", async () => {
-    const checkAssistant = mock(() => {});
     renderHook(() =>
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant,
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
@@ -296,16 +288,14 @@ describe("useEventBusInit — SSE ownership", () => {
     await new Promise((resolve) => setTimeout(resolve, 1100));
     useEventBusStore.getState().publish("power.resume", {});
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(2);
-    expect(checkAssistant).toHaveBeenCalledTimes(1);
+    expect(checkAssistantMock).toHaveBeenCalledTimes(1);
   }, 5_000);
 
   test("power.unlock reopens the SSE after teardown", async () => {
-    const checkAssistant = mock(() => {});
     renderHook(() =>
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant,
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
@@ -314,7 +304,7 @@ describe("useEventBusInit — SSE ownership", () => {
     await new Promise((resolve) => setTimeout(resolve, 1100));
     useEventBusStore.getState().publish("power.unlock", {});
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(2);
-    expect(checkAssistant).toHaveBeenCalledTimes(1);
+    expect(checkAssistantMock).toHaveBeenCalledTimes(1);
   }, 5_000);
 
   test("app.resume no-op (current non-null) does NOT suppress a follow-up power.resume bounce", () => {
@@ -325,12 +315,10 @@ describe("useEventBusInit — SSE ownership", () => {
     // arrives. The handler MUST bounce — that's the entire point of
     // this PR. Independent dedup windows ensure the noop'd
     // app.resume doesn't suppress it.
-    const checkAssistant = mock(() => {});
     renderHook(() =>
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant,
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
@@ -354,12 +342,10 @@ describe("useEventBusInit — SSE ownership", () => {
     // One extra teardown + reopen, <100ms — acceptable cost for
     // closing the missed-bounce bug in the more common tray-resident
     // case.
-    const checkAssistant = mock(() => {});
     renderHook(() =>
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant,
       }),
     );
     useEventBusStore.getState().publish("app.hidden", { signal: "visibility" });
@@ -376,7 +362,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
@@ -394,7 +379,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     openedHandler.mockClear();
@@ -415,7 +399,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant: () => {},
       }),
     );
     openedHandler.mockClear();
@@ -434,12 +417,10 @@ describe("useEventBusInit — SSE ownership", () => {
   }, 5_000);
 
   test("app.resume inside the dedup window does NOT reopen the SSE", async () => {
-    const checkAssistant = mock(() => {});
     renderHook(() =>
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant,
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
@@ -456,16 +437,14 @@ describe("useEventBusInit — SSE ownership", () => {
       .getState()
       .publish("app.resume", { signal: "app_state" });
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(2);
-    expect(checkAssistant).toHaveBeenCalledTimes(1);
+    expect(checkAssistantMock).toHaveBeenCalledTimes(1);
   });
 
   test("does NOT reopen the SSE on app.resume while a connection is still live", () => {
-    const checkAssistant = mock(() => {});
     renderHook(() =>
       useEventBusInit({
         assistantId: "asst-1",
         isAssistantActive: true,
-        checkAssistant,
       }),
     );
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
@@ -475,7 +454,7 @@ describe("useEventBusInit — SSE ownership", () => {
     // Stream is still open (no app.hidden first), so app.resume only
     // triggers a checkAssistant — no new subscribeChatEvents call.
     expect(subscribeChatEventsMock).toHaveBeenCalledTimes(1);
-    expect(checkAssistant).toHaveBeenCalledTimes(1);
+    expect(checkAssistantMock).toHaveBeenCalledTimes(1);
   });
 
   test("does NOT tear down on app.hidden when no connection is live", () => {
@@ -483,7 +462,6 @@ describe("useEventBusInit — SSE ownership", () => {
       useEventBusInit({
         assistantId: null,
         isAssistantActive: false,
-        checkAssistant: () => {},
       }),
     );
     expect(subscribeChatEventsMock).not.toHaveBeenCalled();
@@ -500,7 +478,6 @@ describe("useEventBusInit — SSE ownership", () => {
         useEventBusInit({
           assistantId: id,
           isAssistantActive: id != null,
-          checkAssistant: () => {},
         }),
       { initialProps: { id: "asst-1" } as { id: string | null } },
     );
@@ -518,7 +495,6 @@ describe("useEventBusInit — SSE ownership", () => {
         useEventBusInit({
           assistantId: "asst-1",
           isAssistantActive: active,
-          checkAssistant: () => {},
         }),
       { initialProps: { active: true } },
     );
@@ -539,7 +515,6 @@ describe("useEventBusInit — DOM event sources", () => {
       useEventBusInit({
         assistantId: null,
         isAssistantActive: false,
-        checkAssistant: () => {},
       }),
     );
     window.dispatchEvent(new Event("online"));
@@ -554,7 +529,6 @@ describe("useEventBusInit — DOM event sources", () => {
       useEventBusInit({
         assistantId: null,
         isAssistantActive: false,
-        checkAssistant: () => {},
       }),
     );
     window.dispatchEvent(new Event("offline"));

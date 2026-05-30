@@ -2,7 +2,6 @@ import * as Sentry from "@sentry/react";
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -14,13 +13,14 @@ import { haptic } from "@/utils/haptics";
 import { getLocalBool, setLocalBool, getLocalNumber, setLocalNumber } from "@/utils/local-settings";
 import { routes } from "@/utils/routes";
 import { MOBILE_MEDIA_QUERY, useIsMobile } from "@/hooks/use-is-mobile";
-import { useRootOutletContext } from "@/root-layout";
+import { useAssistantLifecycleStore } from "@/assistant/lifecycle-store";
+import { useAssistantSelectionStore } from "@/assistant/selection-store";
 import { useAssistantIdentityInit } from "@/hooks/use-assistant-identity-init";
 import { useAssistantAvatar } from "@/hooks/use-assistant-avatar";
 import { useDynamicFavicon } from "@/hooks/use-dynamic-favicon";
 import { useHomeUnreadBadge } from "@/hooks/use-home-unread-badge";
 import { useElectronDockSync } from "@/domains/chat/hooks/use-electron-dock-sync";
-import type { AssistantContextValue } from "@/components/layout/assistant-context";
+import { useChatLayoutSlotsStore } from "@/components/layout/chat-layout-slots-store";
 
 import { useVellumCommands } from "@/runtime/vellum-commands";
 import { useConversationStore } from "@/stores/conversation-store";
@@ -127,19 +127,23 @@ interface SideMenuRenderArgs {
 }
 
 /**
- * Chat-specific layout route providing sidebar rail, mobile drawer, keyboard
- * shortcuts (Ctrl+\, Ctrl+K, Ctrl+[/]), and the chat header bar. Owns the
- * assistant lifecycle and passes the resolved state to child routes via
- * outlet context.
+ * Chat-specific layout route providing sidebar rail, mobile drawer,
+ * keyboard shortcuts (Ctrl+\, Ctrl+K, Ctrl+[/]), and the chat header
+ * bar. Reads the resolved assistant from `useAssistantSelectionStore`,
+ * the lifecycle phase from `useAssistantLifecycleStore`, and header
+ * slot content from `useChatLayoutSlotsStore` (which child routes
+ * write to from their own effects).
  *
- * References:
- * - React Router nested layouts: https://reactrouter.com/start/data/routing
- * - React Router outlet context: https://reactrouter.com/start/framework/outlet
+ * @see https://reactrouter.com/start/data/routing
  */
 export function ChatLayout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { lifecycle } = useRootOutletContext();
+  const assistantId = useAssistantSelectionStore.use.activeAssistantId();
+  const assistantStateKind = useAssistantLifecycleStore(
+    (s) => s.assistantState.kind,
+  );
+  const isAssistantActive = assistantStateKind === "active";
 
   // Subscribe to the sidebar conversation list at the layout level so every
   // chat-layout child route (home, library, contacts, identity, chat)
@@ -147,13 +151,12 @@ export function ChatLayout() {
   // TanStack Query handles dedup with any other consumer using the same key.
   const conversationGroupsUI = useAssistantFeatureFlagStore.use.conversationGroupsUI();
   const homePageEnabled = useClientFeatureFlagStore.use.homePage();
-  const isAssistantActive = lifecycle.assistantState.kind === "active";
   const { conversations } = useConversationListQuery(
-    lifecycle.assistantId,
+    assistantId,
     isAssistantActive,
   );
   const { conversationGroups } = useConversationGroupsQuery(
-    lifecycle.assistantId,
+    assistantId,
     isAssistantActive && conversationGroupsUI,
   );
 
@@ -163,8 +166,8 @@ export function ChatLayout() {
   // post-reconnect reconcile sweep stay live across home, library,
   // contacts, identity, and chat — not only inside `/assistant`.
   useAttentionTracking({
-    assistantId: lifecycle.assistantId,
-    assistantStateKind: lifecycle.assistantState.kind,
+    assistantId,
+    assistantStateKind,
   });
 
   // Group CRUD handlers live at the layout level since the sidebar's
@@ -173,7 +176,7 @@ export function ChatLayout() {
   // it can live wherever the sidebar lives.
   const { handleRenameGroup, handleDeleteGroup } =
     useConversationGroupActions({
-      assistantId: lifecycle.assistantId,
+      assistantId,
       conversationGroups,
     });
 
@@ -182,8 +185,8 @@ export function ChatLayout() {
   // route — not only inside a conversation where ChatPage owns the
   // fetch.
   useAssistantIdentityInit({
-    assistantId: lifecycle.assistantId,
-    assistantStateKind: lifecycle.assistantState.kind,
+    assistantId,
+    assistantStateKind,
   });
 
   // Sync the browser favicon to the assistant's avatar across every
@@ -191,7 +194,7 @@ export function ChatLayout() {
   // layout keeps the favicon live while the user is on identity,
   // library, workspace, contacts, or home (where ChatPage isn't
   // mounted). The hook is a no-op when assistantId is null.
-  const layoutAvatar = useAssistantAvatar(lifecycle.assistantId);
+  const layoutAvatar = useAssistantAvatar(assistantId);
   useDynamicFavicon(
     layoutAvatar.customImageUrl,
     layoutAvatar.components,
@@ -202,7 +205,7 @@ export function ChatLayout() {
   // the layout header. Gated on the homePage feature flag so the hook
   // doesn't fire its query when the home route is disabled.
   const { hasUnreadHome } = useHomeUnreadBadge(
-    homePageEnabled ? lifecycle.assistantId : null,
+    homePageEnabled ? assistantId : null,
   );
 
   // Mirror the unread count + signed-in flag into the Electron Dock
@@ -211,42 +214,17 @@ export function ChatLayout() {
   // `./hooks/use-electron-dock-sync.ts`.
   useElectronDockSync(conversations);
 
-  // --- Layout slot state for child route content ---
-  const [topBarCenter, setTopBarCenter] = useState<ReactNode>(null);
-  const [topBarRightSlot, setTopBarRightSlot] = useState<ReactNode>(null);
-  const onSearchClickRef = useRef<(() => void) | null>(null);
-  const setOnSearchClick = useCallback((cb: (() => void) | null) => {
-    onSearchClickRef.current = cb;
-  }, []);
+  // Header slots come from a module-level store so gated routes
+  // (which see `ActiveAssistantGate`'s `<Outlet />` as their
+  // nearest outlet) can register content without the lost-Provider
+  // problem outlet context has across intermediate routes.
+  const topBarCenter = useChatLayoutSlotsStore.use.topBarCenter();
+  const topBarRightSlot = useChatLayoutSlotsStore.use.topBarRightSlot();
+  const onSearchClick = useChatLayoutSlotsStore.use.onSearchClick();
 
   // --- Assistant identity from store (written by ChatPage) ---
   const assistantName = useAssistantIdentityStore.use.name();
   const assistantVersion = useAssistantIdentityStore.use.version();
-
-  const assistantContext = useMemo<AssistantContextValue>(
-    () => ({
-      assistantId: lifecycle.assistantId,
-      assistantState: lifecycle.assistantState,
-      checkAssistant: lifecycle.checkAssistant,
-      retryAssistant: lifecycle.retryAssistant,
-      hatchVersion: lifecycle.hatchVersion,
-      setAssistantId: lifecycle.setAssistantId,
-      autoGreetRef: lifecycle.autoGreetRef,
-      setTopBarCenter,
-      setTopBarRightSlot,
-      setOnSearchClick,
-    }),
-    [
-      lifecycle.assistantId,
-      lifecycle.assistantState,
-      lifecycle.checkAssistant,
-      lifecycle.retryAssistant,
-      lifecycle.hatchVersion,
-      lifecycle.setAssistantId,
-      lifecycle.autoGreetRef,
-      setOnSearchClick,
-    ],
-  );
 
   // --- History tracking for back/forward nav ---
   const historyIndexRef = useRef(0);
@@ -449,17 +427,17 @@ export function ChatLayout() {
   const prePinGroupIdsRef = useRef<Map<string, string | undefined>>(new Map());
 
   const refreshConversations = useCallback(async () => {
-    if (!lifecycle.assistantId) return;
+    if (!assistantId) return;
     try {
       await queryClient.invalidateQueries({
-        queryKey: conversationsQueryKey(lifecycle.assistantId),
+        queryKey: conversationsQueryKey(assistantId),
       });
     } catch (err) {
       Sentry.captureException(err, {
         tags: { context: "refresh_conversations" },
       });
     }
-  }, [lifecycle.assistantId, queryClient]);
+  }, [assistantId, queryClient]);
 
   // `useConversationActions.handleArchiveConversation` calls
   // `startNewConversation({ silent: true })` when the active conversation
@@ -490,7 +468,7 @@ export function ChatLayout() {
     submitRenameConversation,
     cancelRenameConversation,
   } = useConversationActions({
-    assistantId: lifecycle.assistantId,
+    assistantId: assistantId,
     activeConversationId,
     conversations,
     refreshConversations,
@@ -551,7 +529,7 @@ export function ChatLayout() {
   const renderSideMenu = useCallback(
     (args: SideMenuRenderArgs): ReactNode => (
       <AssistantSideMenu
-        assistantId={lifecycle.assistantId ?? ""}
+        assistantId={assistantId ?? ""}
         assistantName={assistantName}
         collapsed={args.collapsed}
         variant={args.variant}
@@ -581,7 +559,7 @@ export function ChatLayout() {
         onInspect={showLlmInspector ? handleInspectConversation : undefined}
         footerAction={
           <PreferencesMenu
-            assistantId={lifecycle.assistantId}
+            assistantId={assistantId}
             assistantVersion={assistantVersion}
             activeConversationId={activeConversationId}
           />
@@ -591,7 +569,7 @@ export function ChatLayout() {
       />
     ),
     [
-      lifecycle.assistantId,
+      assistantId,
       assistantName,
       assistantVersion,
       conversations,
@@ -637,14 +615,14 @@ export function ChatLayout() {
         onOpenHome={handleOpenHome}
         isHomeActive={isHomeActive}
         hasUnreadHome={hasUnreadHome}
-        onSearchClick={() => onSearchClickRef.current?.()}
+        onSearchClick={onSearchClick ?? undefined}
       />
 
       <OfflineBanner />
 
       {isMobile ? (
         <main className="relative flex min-w-0 flex-1 min-h-0 flex-col overflow-hidden">
-          <Outlet context={assistantContext} />
+          <Outlet  />
           {drawerVisible ? (
             <div
               ref={drawerRef}
@@ -673,7 +651,7 @@ export function ChatLayout() {
                   collapsed: false,
                   variant: "overlay",
                   onClose: () => setDrawerOpen(false),
-                  onSearch: () => onSearchClickRef.current?.(),
+                  onSearch: onSearchClick ?? undefined,
                 })}
               </aside>
             </div>
@@ -686,10 +664,10 @@ export function ChatLayout() {
             className="shrink-0"
             aria-label="Navigation"
           >
-            {renderSideMenu({ collapsed, variant: "rail", width: sidebarWidth, onWidthChange: handleSidebarWidthChange, onSearch: () => onSearchClickRef.current?.() })}
+            {renderSideMenu({ collapsed, variant: "rail", width: sidebarWidth, onWidthChange: handleSidebarWidthChange, onSearch: onSearchClick ?? undefined })}
           </aside>
           <main className="flex min-w-0 flex-1 min-h-0 flex-col overflow-hidden">
-            <Outlet context={assistantContext} />
+            <Outlet  />
           </main>
         </div>
       )}
