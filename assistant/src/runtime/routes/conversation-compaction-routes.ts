@@ -58,6 +58,7 @@ import {
 } from "../../memory/conversation-crud.js";
 import { getLlmRequestLogSource } from "../../memory/llm-request-log-source.js";
 import type { LogRow } from "../../memory/llm-request-log-store.js";
+import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { BadRequestError, NotFoundError } from "./errors.js";
 import {
   type LlmContextSummary,
@@ -252,7 +253,10 @@ export const ROUTES: RouteDefinition[] = [
     operationId: "conversations_compaction_trail_get",
     endpoint: "conversations/:id/compaction",
     method: "GET",
-    policyKey: "conversations/compaction",
+    policy: {
+      requiredScopes: ["chat.read"],
+      allowedPrincipalTypes: ACTOR_PRINCIPALS,
+    },
     summary: "Get the compaction trail leading up to an LLM call",
     description:
       "Return the chronological list of compaction events that ran in the same agent turn as the call identified by `callId`. Turn bounds are walked from the `messages` table (real user messages — tool-result user messages are not boundaries). Projected from `llm_request_logs` rows where `call_site = \"compactionAgent\"`. When the conversation has no other messages around the selected call, every compaction strictly before the call's `createdAt` is in scope. Drives the Inspector's Compaction tab.",
