@@ -163,9 +163,6 @@ const ASSISTANT_SUPPORTED_COMMAND_PATHS = [
   "memory v2 reembed-skills",
   "memory v2 activation",
   "memory v2 validate",
-  "memory v3",
-  "memory v3 validate",
-  "memory v3 tree",
   "notifications",
   "notifications send",
   "notifications list",
@@ -496,16 +493,6 @@ const riskOverrides: AssistantRiskOverride[] = [
     path: "memory v2 validate",
     risk: "low",
     reason: "Read-only diagnostic walk over concept pages and edges",
-  },
-  {
-    path: "memory v3 validate",
-    risk: "low",
-    reason: "Read-only structural validation of the v3 tree DAG",
-  },
-  {
-    path: "memory v3 tree",
-    risk: "low",
-    reason: "Read-only print of the v3 tree DAG structure",
   },
   { path: "notifications send", risk: "low" },
   {
