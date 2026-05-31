@@ -1,5 +1,15 @@
 # Plugin authoring guide
 
+> **Note:** This guide documents the **legacy** plugin architecture — the
+> in-tree `register.ts` + middleware-pipeline system. We are converging on
+> the schema at
+> [`experimental/plugins/README.md`](../../experimental/plugins/README.md)
+> (file-based discovery, a `package.json` manifest, the
+> `@vellumai/plugin-api` public contract). The plan is to reshape this guide
+> section by section until it matches that one; wherever the two still
+> differ is the next piece of consolidation work. New plugins should target
+> the modern schema.
+
 Plugins let you extend the assistant by hooking middleware into named
 runtime pipelines, contributing tools/routes/skills, and injecting
 system-prompt content. This guide is the authoritative reference for how
@@ -13,6 +23,8 @@ way to see the system in action.
 
 ## Table of contents
 
+- [TL;DR](#tldr)
+- [What a plugin can contribute today](#what-a-plugin-can-contribute-today)
 - [Anatomy of a plugin](#anatomy-of-a-plugin)
 - [Where plugins live](#where-plugins-live)
 - [Manifest](#manifest)
@@ -26,6 +38,34 @@ way to see the system in action.
 - [Cross-plugin communication](#cross-plugin-communication)
 - [Hot reload](#hot-reload)
 - [Troubleshooting](#troubleshooting)
+
+---
+
+## TL;DR
+
+1. Create a directory `<workspaceDir>/plugins/my-plugin/`.
+2. Add a `register.ts` that builds a `Plugin` object and passes it to
+   `registerPlugin()` as an import-time side effect.
+3. Give the manifest a `name` and `version`.
+4. Hang middleware, tools, routes, skills, or injectors off the `Plugin`
+   object.
+5. Restart the assistant — the loader scans `<workspaceDir>/plugins/*` and
+   registers the plugin on startup.
+
+## What a plugin can contribute today
+
+| Surface                 | Where                     | Discovery                                         |
+| ----------------------- | ------------------------- | ------------------------------------------------- |
+| Pipeline middleware     | `plugin.middleware`       | keyed by pipeline name in `PipelineMiddlewareMap` |
+| Model-visible tools     | `plugin.tools`            | each `PluginToolRegistration`                     |
+| HTTP routes             | `plugin.routes`           | each `PluginRouteRegistration`                    |
+| Skills                  | `plugin.skills`           | each `PluginSkillRegistration`                    |
+| System-prompt injectors | `plugin.injectors`        | each `Injector`                                   |
+| Lifecycle               | `init()` / `onShutdown()` | methods on the `Plugin` object                    |
+
+The modern schema wires only **hooks** and **tools**; the middleware
+pipelines, routes, skills, and injectors above are the surfaces that still
+have no modern equivalent.
 
 ---
 
