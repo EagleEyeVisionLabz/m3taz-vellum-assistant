@@ -66,7 +66,28 @@ export interface CheckpointInfo {
   history: Message[]; // current history snapshot for token estimation
 }
 
-export type CheckpointDecision = "continue" | "yield";
+/**
+ * Why a checkpoint paused the loop. Surfaced back to the caller via
+ * {@link AgentLoopRunResult.exitReason} so the orchestrator reacts to
+ * the loop's own signal (hand off to a queued message vs. compact and
+ * re-enter) instead of the checkpoint callback mutating orchestrator state.
+ */
+export type ExitReason = "handoff" | "budget";
+
+export type CheckpointDecision = "continue" | ExitReason;
+
+/**
+ * Result of {@link AgentLoop.run}.
+ *
+ * `exitReason` carries the reason the loop paused at a checkpoint so the
+ * orchestrator reads the loop's own signal instead of inferring it from
+ * callback side-effects. It is `null` whenever the loop reached a terminal
+ * stop (completion, error, abort, or a tool-requested yield-to-user).
+ */
+export interface AgentLoopRunResult {
+  history: Message[];
+  exitReason: ExitReason | null;
+}
 
 /**
  * Why an agent turn reached a terminal state.
@@ -523,7 +544,7 @@ export class AgentLoop {
     messages: Message[],
     onEvent: (event: AgentEvent) => void | Promise<void>,
     options?: AgentLoopRunOptions,
-  ): Promise<Message[]> {
+  ): Promise<AgentLoopRunResult> {
     const {
       signal,
       requestId,
@@ -542,6 +563,7 @@ export class AgentLoop {
     let consecutiveErrorTurns = 0;
     let emptyResponseRetries = 0;
     let lastLlmCallTime = 0;
+    let exitReason: ExitReason | null = null;
     const rlog = requestId ? log.child({ requestId }) : log;
 
     // Per-run substitution map for sensitive output placeholders.
@@ -1387,7 +1409,8 @@ export class AgentLoop {
             hasToolUse: true,
             history,
           });
-          if (decision === "yield") {
+          if (decision !== "continue") {
+            exitReason = decision;
             break;
           }
         }
@@ -1438,7 +1461,7 @@ export class AgentLoop {
       "Agent loop exited",
     );
 
-    return history;
+    return { history, exitReason };
   }
 }
 
