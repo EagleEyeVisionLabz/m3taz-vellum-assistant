@@ -397,3 +397,21 @@ export const AssistantEventSchema = z.discriminatedUnion("type", [
  * event migrates into the schema, it appears here automatically.
  */
 export type AssistantEvent = z.infer<typeof AssistantEventSchema>;
+
+/**
+ * SSE wire envelope wrapping every outbound event from the daemon.
+ *
+ * Transport-level metadata (`id`, `seq`, `emittedAt`, `conversationId`)
+ * surrounds the semantic event payload in `message`.
+ */
+export const AssistantEventEnvelopeSchema = z.object({
+  id: z.string(),
+  conversationId: z.string().optional(),
+  seq: z.number().int().optional(),
+  emittedAt: z.string(),
+  message: AssistantEventSchema,
+});
+
+export type AssistantEventEnvelope = z.infer<
+  typeof AssistantEventEnvelopeSchema
+>;
