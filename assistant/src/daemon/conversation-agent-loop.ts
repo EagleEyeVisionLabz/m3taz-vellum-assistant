@@ -168,8 +168,6 @@ import {
   createEventHandlerState,
   dispatchAgentEvent,
   type EventHandlerDeps,
-  isCompactionCircuitOpen,
-  trackCompactionOutcome,
 } from "./conversation-agent-loop-handlers.js";
 import {
   approveHostAttachmentRead,
@@ -384,10 +382,6 @@ export interface AgentLoopConversationContext {
    * happened just before this turn).
    */
   pendingPostCompactReinject: boolean;
-  /** Tracks consecutive compaction failures (summary LLM call threw). */
-  consecutiveCompactionFailures: number;
-  /** Timestamp (ms since epoch) until which the circuit breaker is open. */
-  compactionCircuitOpenUntil: number | null;
 
   readonly graphMemory: ConversationGraphMemory;
 
@@ -1107,7 +1101,8 @@ export async function runAgentLoopImpl(
     );
     // Skip auto-compaction while the circuit breaker is open. Force paths
     // and user-initiated /compact bypass this check.
-    const autoCompactAllowed = !(await isCompactionCircuitOpen(ctx));
+    const autoCompactAllowed =
+      !(await ctx.agentLoop.compactionCircuit.isOpen(ctx));
     if (compactCheck.needed && autoCompactAllowed) {
       ctx.emitActivityState("thinking", "context_compacting", {
         requestId: reqId,
@@ -1151,7 +1146,11 @@ export async function runAgentLoopImpl(
             { err, phase: "start-of-turn-compaction" },
             "Compaction pipeline timed out — skipping compaction this turn",
           );
-          await trackCompactionOutcome(ctx, true, onEvent);
+          await ctx.agentLoop.compactionCircuit.recordOutcome(
+            ctx,
+            true,
+            onEvent,
+          );
           compacted = null;
         } else {
           throw err;
@@ -1164,7 +1163,11 @@ export async function runAgentLoopImpl(
     // path) — treating those as "successful" compactions would silently reset
     // the 3-strike counter and break the invariant.
     if (compacted && compacted.summaryFailed !== undefined) {
-      await trackCompactionOutcome(ctx, compacted.summaryFailed, onEvent);
+      await ctx.agentLoop.compactionCircuit.recordOutcome(
+        ctx,
+        compacted.summaryFailed,
+        onEvent,
+      );
     }
     if (compacted?.compacted) {
       await applySuccessfulCompaction(
@@ -1888,7 +1891,11 @@ export async function runAgentLoopImpl(
                 { err, phase: "overflow-reducer-forced-compaction" },
                 "Compaction pipeline timed out — falling through to next reducer tier",
               );
-              await trackCompactionOutcome(ctx, true, onEvent);
+              await ctx.agentLoop.compactionCircuit.recordOutcome(
+                ctx,
+                true,
+                onEvent,
+              );
               return {
                 messages: msgs,
                 compacted: false,
@@ -1925,7 +1932,11 @@ export async function runAgentLoopImpl(
           // truncation-only path, etc.) that shouldn't influence the
           // breaker.
           if (result.summaryFailed !== undefined) {
-            await trackCompactionOutcome(ctx, result.summaryFailed, onEvent);
+            await ctx.agentLoop.compactionCircuit.recordOutcome(
+              ctx,
+              result.summaryFailed,
+              onEvent,
+            );
           }
           if (result.compacted) {
             await applySuccessfulCompaction(result, compactedBasis);
@@ -2182,7 +2193,7 @@ export async function runAgentLoopImpl(
         // leave `summaryFailed` undefined. Only track when the summary LLM
         // actually ran.
         if (compactResult.summaryFailed !== undefined) {
-          await trackCompactionOutcome(
+          await ctx.agentLoop.compactionCircuit.recordOutcome(
             ctx,
             compactResult.summaryFailed,
             onEvent,
@@ -2508,7 +2519,7 @@ export async function runAgentLoopImpl(
               "Emergency mid-turn compaction succeeded — bypassing reducer tiers",
             );
             if (emergencyResult.summaryFailed !== undefined) {
-              await trackCompactionOutcome(
+              await ctx.agentLoop.compactionCircuit.recordOutcome(
                 ctx,
                 emergencyResult.summaryFailed,
                 onEvent,
@@ -2583,7 +2594,7 @@ export async function runAgentLoopImpl(
           step.compactionResult &&
           step.compactionResult.summaryFailed !== undefined
         ) {
-          await trackCompactionOutcome(
+          await ctx.agentLoop.compactionCircuit.recordOutcome(
             ctx,
             step.compactionResult.summaryFailed,
             onEvent,
@@ -2718,7 +2729,11 @@ export async function runAgentLoopImpl(
                 { err, phase: "emergency-compaction" },
                 "Emergency compaction pipeline timed out — continuing with overflow fallback",
               );
-              await trackCompactionOutcome(ctx, true, onEvent);
+              await ctx.agentLoop.compactionCircuit.recordOutcome(
+                ctx,
+                true,
+                onEvent,
+              );
               emergencyCompact = null;
             } else {
               throw err;
@@ -2730,7 +2745,7 @@ export async function runAgentLoopImpl(
             emergencyCompact &&
             emergencyCompact.summaryFailed !== undefined
           ) {
-            await trackCompactionOutcome(
+            await ctx.agentLoop.compactionCircuit.recordOutcome(
               ctx,
               emergencyCompact.summaryFailed,
               onEvent,
