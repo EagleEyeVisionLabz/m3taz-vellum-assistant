@@ -320,9 +320,8 @@ export function AssistantSideMenu({
     onShowMore?: () => void,
     showLess = false,
     onShowLess?: () => void,
-    className?: string,
   ): ReactNode => (
-    <SideMenu.SubList className={className}>
+    <SideMenu.SubList>
       {items.map((c) =>
         renderThreadRow(
           c,
@@ -508,10 +507,6 @@ export function AssistantSideMenu({
                 {renderFlatList(
                   sidebar.pinned,
                   false,
-                  undefined,
-                  false,
-                  undefined,
-                  "-ml-[10px] w-[calc(100%+10px)]",
                 )}
               </SideMenu.Section>
             ) : null}
@@ -526,7 +521,6 @@ export function AssistantSideMenu({
                 sidebar.recents.onShowMore,
                 sidebar.recents.showLess,
                 sidebar.recents.onShowLess,
-                "-ml-[10px] w-[calc(100%+10px)]",
               )}
 
               <CollapsibleNavSection.Root
