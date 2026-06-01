@@ -44,7 +44,6 @@ import {
 import { type Options } from "@/generated/daemon/sdk.gen";
 import type { SkillsGetData } from "@/generated/daemon/types.gen";
 import { installSkill } from "@/domains/intelligence/skills/install";
-import { inferCategory } from "@/domains/intelligence/skills/category";
 import {
   isInstalledSkill,
   type SkillCategory,
@@ -369,7 +368,7 @@ function useDerivedCounts(
     }
     const computed: Record<string, number> = {};
     for (const skill of skills) {
-      const cat = inferCategory(skill);
+      const cat = skill.category ?? "knowledge";
       computed[cat] = (computed[cat] ?? 0) + 1;
     }
     return {

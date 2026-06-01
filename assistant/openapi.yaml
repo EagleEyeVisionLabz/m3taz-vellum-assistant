@@ -16866,6 +16866,8 @@ paths:
                                 - enabled
                                 - disabled
                                 - available
+                            category:
+                              type: string
                             origin:
                               type: string
                               const: vellum
@@ -16875,6 +16877,7 @@ paths:
                             - description
                             - kind
                             - status
+                            - category
                             - origin
                           additionalProperties: false
                         - type: object
@@ -16899,6 +16902,8 @@ paths:
                                 - enabled
                                 - disabled
                                 - available
+                            category:
+                              type: string
                             origin:
                               type: string
                               const: clawhub
@@ -16922,6 +16927,7 @@ paths:
                             - description
                             - kind
                             - status
+                            - category
                             - origin
                             - slug
                             - author
@@ -16952,6 +16958,8 @@ paths:
                                 - enabled
                                 - disabled
                                 - available
+                            category:
+                              type: string
                             origin:
                               type: string
                               const: skillssh
@@ -16993,6 +17001,7 @@ paths:
                             - description
                             - kind
                             - status
+                            - category
                             - origin
                             - slug
                             - sourceRepo
@@ -17020,6 +17029,8 @@ paths:
                                 - enabled
                                 - disabled
                                 - available
+                            category:
+                              type: string
                             origin:
                               type: string
                               const: custom
@@ -17029,6 +17040,7 @@ paths:
                             - description
                             - kind
                             - status
+                            - category
                             - origin
                           additionalProperties: false
                     description: Skill objects
@@ -17172,6 +17184,8 @@ paths:
                               - enabled
                               - disabled
                               - available
+                          category:
+                            type: string
                           origin:
                             type: string
                             const: vellum
@@ -17181,6 +17195,7 @@ paths:
                           - description
                           - kind
                           - status
+                          - category
                           - origin
                         additionalProperties: false
                       - type: object
@@ -17205,6 +17220,8 @@ paths:
                               - enabled
                               - disabled
                               - available
+                          category:
+                            type: string
                           origin:
                             type: string
                             const: clawhub
@@ -17282,6 +17299,7 @@ paths:
                           - description
                           - kind
                           - status
+                          - category
                           - origin
                           - slug
                           - author
@@ -17312,6 +17330,8 @@ paths:
                               - enabled
                               - disabled
                               - available
+                          category:
+                            type: string
                           origin:
                             type: string
                             const: skillssh
@@ -17353,6 +17373,7 @@ paths:
                           - description
                           - kind
                           - status
+                          - category
                           - origin
                           - slug
                           - sourceRepo
@@ -17380,6 +17401,8 @@ paths:
                               - enabled
                               - disabled
                               - available
+                          category:
+                            type: string
                           origin:
                             type: string
                             const: custom
@@ -17389,6 +17412,7 @@ paths:
                           - description
                           - kind
                           - status
+                          - category
                           - origin
                         additionalProperties: false
                     description: Skill detail object
@@ -17777,6 +17801,8 @@ paths:
                                 - enabled
                                 - disabled
                                 - available
+                            category:
+                              type: string
                             origin:
                               type: string
                               const: vellum
@@ -17786,6 +17812,7 @@ paths:
                             - description
                             - kind
                             - status
+                            - category
                             - origin
                           additionalProperties: false
                         - type: object
@@ -17810,6 +17837,8 @@ paths:
                                 - enabled
                                 - disabled
                                 - available
+                            category:
+                              type: string
                             origin:
                               type: string
                               const: clawhub
@@ -17833,6 +17862,7 @@ paths:
                             - description
                             - kind
                             - status
+                            - category
                             - origin
                             - slug
                             - author
@@ -17863,6 +17893,8 @@ paths:
                                 - enabled
                                 - disabled
                                 - available
+                            category:
+                              type: string
                             origin:
                               type: string
                               const: skillssh
@@ -17904,6 +17936,7 @@ paths:
                             - description
                             - kind
                             - status
+                            - category
                             - origin
                             - slug
                             - sourceRepo
@@ -17931,6 +17964,8 @@ paths:
                                 - enabled
                                 - disabled
                                 - available
+                            category:
+                              type: string
                             origin:
                               type: string
                               const: custom
@@ -17940,6 +17975,7 @@ paths:
                             - description
                             - kind
                             - status
+                            - category
                             - origin
                           additionalProperties: false
                     description: Skill objects matching the search query
