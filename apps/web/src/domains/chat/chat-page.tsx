@@ -68,6 +68,7 @@ import { useAssistantReachability } from "@/assistant/use-assistant-reachability
 import { useDiskPressureMonitor } from "@/assistant/use-disk-pressure-monitor";
 import { getDiskPressureChatBlockReason } from "@/assistant/disk-pressure";
 import { useAppNudges } from "@/domains/chat/hooks/use-app-nudges";
+import { liveAssistantRowId } from "@/domains/chat/hooks/stream-message-updaters";
 import { useOpenAppFromChat } from "@/domains/chat/hooks/use-open-app-from-chat";
 import { useConversationLoader } from "@/domains/conversations/use-conversation-loader";
 import { useMobileOverlayTarget } from "@/domains/chat/hooks/use-mobile-overlay-target";
@@ -480,9 +481,29 @@ export function ChatPage() {
   const avatar = useAssistantAvatar(assistantId);
 
   // -------------------------------------------------------------------------
+  // Live assistant row — the not-yet-finalized streaming bubble of the active
+  // turn, derived from message position and the conversation's processing
+  // state. `null` when nothing is streaming.
+  // -------------------------------------------------------------------------
+  const liveAssistantMessageId = useMemo(
+    () =>
+      liveAssistantRowId(
+        messages,
+        activeConversationId != null &&
+          processingConversationIds.has(activeConversationId),
+      ),
+    [messages, activeConversationId, processingConversationIds],
+  );
+
+  // -------------------------------------------------------------------------
   // Nudges
   // -------------------------------------------------------------------------
-  const nudges = useAppNudges(messages, conversations.length, streamingMessageIdsRef);
+  const nudges = useAppNudges(
+    messages,
+    conversations.length,
+    streamingMessageIdsRef,
+    liveAssistantMessageId,
+  );
 
   // -------------------------------------------------------------------------
   // Derived state
@@ -954,7 +975,6 @@ export function ChatPage() {
     reachabilityProbe: reachability.probe,
     reachabilityPhase: reachability.state.phase,
     reachabilityReset: reachability.reset,
-    setMessages,
     setError,
     syncRouterRef,
     conversationListInvalidatedTimerRef,
@@ -1307,10 +1327,12 @@ export function ChatPage() {
   // now given the user's typed prefix".
   const lastCompleteAssistantMsgId = useMemo<string | null>(() => {
     const last = messages[messages.length - 1];
-    return last && last.role === "assistant" && !last.isStreaming
+    return last &&
+      last.role === "assistant" &&
+      last.id !== liveAssistantMessageId
       ? last.id ?? null
       : null;
-  }, [messages]);
+  }, [messages, liveAssistantMessageId]);
 
   const suggestion = useGhostTextSuggestion({
     assistantId,
@@ -1345,7 +1367,7 @@ export function ChatPage() {
 
   // Build UIContext first — needed for showThinking calculation
   const _uiContext: UIContext = {
-    hasStreamingAssistantMessage: messages.some((m) => m.isStreaming),
+    hasStreamingAssistantMessage: liveAssistantMessageId != null,
     hasPendingSecret: !!pendingSecret,
     hasPendingConfirmation: !!pendingConfirmation,
     hasPendingQuestion: !!pendingQuestion,
