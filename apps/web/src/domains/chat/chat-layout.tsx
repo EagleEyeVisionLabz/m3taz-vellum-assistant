@@ -513,7 +513,6 @@ export function ChatLayout() {
       activeConversationId: activeConversationId ?? undefined,
       startNewConversation: () => startNewConversation(),
       switchConversation: handleSelectConversation,
-      navigate,
     });
 
   // Electron host commands (File menu / future global hotkeys). The hook

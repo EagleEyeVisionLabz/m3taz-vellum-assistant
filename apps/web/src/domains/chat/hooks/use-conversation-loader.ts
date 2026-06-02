@@ -22,11 +22,14 @@ import {
 
 import { useChatSessionStore } from "@/domains/chat/chat-session-store";
 import { useConversationStore } from "@/stores/conversation-store";
+import { useSubagentStore } from "@/domains/chat/subagent-store";
+import { requestComposerFocus } from "@/domains/chat/composer-focus";
 import { haptic } from "@/utils/haptics";
 import { routes } from "@/utils/routes";
-import type { NavigateFunction } from "react-router";
+import { useNavigate } from "react-router";
 
-import type { AssistantStateKind, ChatError } from "@/domains/chat/types";
+import type { AssistantStateKind } from "@/domains/chat/types";
+import { shouldSuppressGenericChatErrorNotice } from "@/domains/chat/utils/error-classification";
 import { useConversationHistory } from "@/domains/chat/hooks/use-conversation-history";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -48,12 +51,6 @@ import {
 const CONVERSATION_LIST_INVALIDATED_DEBOUNCE_MS = 250;
 const CONVERSATION_LIST_LOAD_FAILED_CODE = "CONVERSATION_LIST_LOAD_FAILED";
 
-/** Minimal URL search-params reader (subset of `URLSearchParams`). */
-interface SearchParamsLike {
-  get: (key: string) => string | null;
-  toString: () => string;
-}
-
 interface UseConversationLoaderParams {
   // Identity / routing
   assistantId: string | null;
@@ -61,9 +58,7 @@ interface UseConversationLoaderParams {
   activeConversationId: string | null;
   /** Conversation id from the URL path param (e.g. `/assistant/conversations/:conversationId`). */
   urlConversationId: string | null;
-  searchParams: SearchParamsLike;
-  /** React Router navigate function for path-based routing. */
-  navigate: NavigateFunction;
+  searchParams: URLSearchParams;
 
   // The resolved row for the currently-open conversation, drawn from either
   // list cache (or fetched on demand). Used to decide whether the active
@@ -77,12 +72,6 @@ interface UseConversationLoaderParams {
 
   // Infrastructure refs (not per-conversation state)
   onboardingDraftConversationIdRef: MutableRefObject<string | null>;
-  conversationListInvalidatedTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>;
-  pendingInitialMessageRef: MutableRefObject<{ conversationId: string; content: string } | null>;
-
-  // Error classification
-  shouldSuppressGenericChatErrorNotice: (prev: ChatError | null) => boolean;
-
   // Attachment reset (lives outside the session store)
   resetChatAttachments: () => void;
 }
@@ -115,23 +104,22 @@ export function useConversationLoader({
   activeConversationId,
   urlConversationId,
   searchParams,
-  navigate,
   activeConversation,
   conversationGroupsUI,
   refreshEpoch,
   reachabilityReadyEpoch,
   onboardingDraftConversationIdRef,
-  conversationListInvalidatedTimerRef,
-  pendingInitialMessageRef,
-  shouldSuppressGenericChatErrorNotice,
   resetChatAttachments,
 }: UseConversationLoaderParams) {
+  const navigate = useNavigate();
+
   // -------------------------------------------------------------------------
   // Internal refs
   // -------------------------------------------------------------------------
   const assistantIdRef = useRef<string | null>(assistantId);
   assistantIdRef.current = assistantId;
   const refreshConversationsRef = useRef<() => Promise<void>>(async () => {});
+  const conversationListInvalidatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queryClient = useQueryClient();
 
   // -------------------------------------------------------------------------
@@ -185,7 +173,15 @@ export function useConversationLoader({
       conversationListInvalidatedTimerRef.current = null;
       refreshConversationsRef.current();
     }, CONVERSATION_LIST_INVALIDATED_DEBOUNCE_MS);
-  }, [conversationListInvalidatedTimerRef]);
+  }, []);
+
+  /** Cancel any pending debounced conversation list refetch. */
+  const cancelScheduledRefetch = useCallback(() => {
+    if (conversationListInvalidatedTimerRef.current) {
+      clearTimeout(conversationListInvalidatedTimerRef.current);
+      conversationListInvalidatedTimerRef.current = null;
+    }
+  }, []);
 
   // -------------------------------------------------------------------------
   // Conversation list query subscription
@@ -442,33 +438,34 @@ export function useConversationLoader({
   // -------------------------------------------------------------------------
   const switchConversation = useCallback(
     (key: string) => {
+      useSubagentStore.getState().reset();
       useViewerStore.getState().setMainView("chat");
-      if (key === activeConversationId) return;
+      if (key === useConversationStore.getState().activeConversationId) return;
       void navigate(routes.conversation(key));
     },
-    [activeConversationId, navigate],
+    [navigate],
   );
 
   // -------------------------------------------------------------------------
   // startNewConversation
   // -------------------------------------------------------------------------
   const startNewConversation = useCallback(
-    ({ silent, initialMessage }: { silent?: boolean; initialMessage?: string } = {}) => {
+    ({ silent }: { silent?: boolean } = {}) => {
       if (!silent) haptic.light();
+      useSubagentStore.getState().reset();
       useViewerStore.getState().setMainView("chat");
       const draftConversationId = createDraftConversationId();
-      if (initialMessage) {
-        pendingInitialMessageRef.current = { conversationId: draftConversationId, content: initialMessage };
-      }
       useConversationStore.getState().setActiveConversationId(draftConversationId);
       void navigate(routes.conversation(draftConversationId));
+      requestComposerFocus();
     },
-    [navigate, pendingInitialMessageRef],
+    [navigate],
   );
 
   return {
     refreshConversations,
     scheduleConversationListRefetch,
+    cancelScheduledRefetch,
     switchConversation,
     startNewConversation,
     conversationExistsOnServer,
