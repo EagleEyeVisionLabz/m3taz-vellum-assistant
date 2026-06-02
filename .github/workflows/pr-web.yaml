@@ -6,6 +6,8 @@ on:
     paths:
       - 'apps/web/**'
       - 'packages/design-library/**'
+      - 'packages/local-mode/**'
+      - 'packages/environments/**'
       - '.github/workflows/pr-web.yaml'
 
 concurrency:
@@ -36,6 +38,14 @@ jobs:
 
       - name: Generate API clients
         run: bun run openapi-ts
+
+      - name: Install environments package
+        working-directory: packages/environments
+        run: bun install --frozen-lockfile
+
+      - name: Install local-mode package
+        working-directory: packages/local-mode
+        run: bun install --frozen-lockfile
 
       - name: Lint
         run: bun run lint
@@ -74,6 +84,14 @@ jobs:
       - name: Generate API clients
         run: bun run openapi-ts
 
+      - name: Install environments package
+        working-directory: packages/environments
+        run: bun install --frozen-lockfile
+
+      - name: Install local-mode package
+        working-directory: packages/local-mode
+        run: bun install --frozen-lockfile
+
       - name: Type check
         run: bun run typecheck
 
@@ -102,6 +120,14 @@ jobs:
       - name: Generate API clients
         run: bun run openapi-ts
 
+      - name: Install environments package
+        working-directory: packages/environments
+        run: bun install --frozen-lockfile
+
+      - name: Install local-mode package
+        working-directory: packages/local-mode
+        run: bun install --frozen-lockfile
+
       - name: Test
         run: bun run test:ci
 
@@ -125,6 +151,14 @@ jobs:
 
       - name: Generate API clients
         run: bun run openapi-ts
+
+      - name: Install environments package
+        working-directory: packages/environments
+        run: bun install --frozen-lockfile
+
+      - name: Install local-mode package
+        working-directory: packages/local-mode
+        run: bun install --frozen-lockfile
 
       - name: Build
         env:
