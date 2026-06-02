@@ -56,6 +56,11 @@ import { publishSyncInvalidation } from "../runtime/sync/sync-publisher.js";
 import { redactSecrets } from "../security/secret-scanner.js";
 import { extractDomain } from "../tools/network/domain-normalize.js";
 import {
+  classifyWebSearchFailure,
+  logWebSearchBackendFailure,
+  WEB_SEARCH_BACKEND_FAILURE_MESSAGE,
+} from "../tools/network/web-search-error.js";
+import {
   buildPricingUsage,
   resolveStructuredPricing,
 } from "../usage/pricing.js";
@@ -246,6 +251,8 @@ export interface EventHandlerState {
   readonly serverToolStartedAt: Map<string, number>;
   /** Original input from server_tool_start, keyed by tool_use_id, so the complete handler can read the query. */
   readonly serverToolInputs: Map<string, Record<string, unknown>>;
+  /** Request ids for which a user-facing web_search backend-failure notice was already surfaced this turn (dedup noisy repeats). Keyed by request id; each turn has a fresh request id, so this grows at most one entry per turn. */
+  readonly webSearchBackendFailureNotified: Set<string>;
   /** Active debounce timer for partial persistence; `undefined` when idle. */
   pendingPartialFlushTimer: ReturnType<typeof setTimeout> | undefined;
   /** In-flight partial flush write awaited at finalize to avoid overwrite races. */
@@ -311,6 +318,7 @@ export function createEventHandlerState(): EventHandlerState {
     turnStartedAt: Date.now(),
     serverToolStartedAt: new Map(),
     serverToolInputs: new Map(),
+    webSearchBackendFailureNotified: new Set(),
     pendingPartialFlushTimer: undefined,
     pendingPartialFlushPromise: undefined,
     currentMessageContent: [],
@@ -1828,9 +1836,65 @@ export async function dispatchAgentEvent(
         // for them would mis-label the provider and ship empty results.
         const isAnthropicNative = deps.ctx.provider.name === "anthropic";
 
-        const errorMessage = event.isError
-          ? (event.errorMessage ?? event.errorCode ?? "Search failed")
-          : undefined;
+        // Classify provider failures through the shared normalizer so the same
+        // friendly copy propagates to every client via WebSearchMetadata, while
+        // the raw provider detail stays in telemetry only (ATL-727).
+        const classification = classifyWebSearchFailure({
+          errorCode: event.errorCode,
+          error: event.errorMessage,
+          isError: event.isError,
+          hasResults: results.length > 0,
+        });
+
+        let errorMessage: string | undefined;
+        let fallbackShown = false;
+        if (event.isError) {
+          // A genuine backend failure OR an unclassifiable, message-less native
+          // failure (e.g. `isError:true` with no `error_code`) both surface the
+          // friendly backend copy: a terse "Search failed" placeholder is the
+          // confusing copy this normalization exists to eliminate (ATL-727).
+          // Recoverable categories that carry a real user message
+          // (query_too_long, max_uses_exceeded) keep their own copy.
+          const useBackendCopy =
+            classification.isBackendFailure || !classification.userMessage;
+          if (useBackendCopy) {
+            // Dedup the user-facing friendly notice per turn (request id) so a
+            // burst of failures surfaces at most one full notice. The raw
+            // provider error is preserved on every failure via telemetry below.
+            const alreadyNotified = state.webSearchBackendFailureNotified.has(
+              deps.reqId,
+            );
+            if (alreadyNotified) {
+              errorMessage = "Search is still having trouble.";
+            } else {
+              state.webSearchBackendFailureNotified.add(deps.reqId);
+              errorMessage = WEB_SEARCH_BACKEND_FAILURE_MESSAGE;
+              fallbackShown = true;
+            }
+
+            // Backend-failure telemetry (provider outages / rate limits) must
+            // fire only for genuine backend classifications so it does not
+            // count recoverable input/quota errors — or a message-less unknown
+            // failure that merely borrows the friendly copy — as provider
+            // outages.
+            if (classification.isBackendFailure) {
+              logWebSearchBackendFailure(deps.rlog, {
+                provider: isAnthropicNative
+                  ? "anthropic-native"
+                  : deps.ctx.provider.name,
+                requestId: deps.reqId,
+                errorCategory: classification.category,
+                rawDetail: classification.rawDetail,
+                fallbackShown,
+                queryLength: query.length,
+              });
+            }
+          } else {
+            // Recoverable, non-backend categories with their own user-facing
+            // copy (query_too_long, max_uses_exceeded) keep that message.
+            errorMessage = classification.userMessage;
+          }
+        }
 
         const metadata: WebSearchMetadata | undefined = isAnthropicNative
           ? {
