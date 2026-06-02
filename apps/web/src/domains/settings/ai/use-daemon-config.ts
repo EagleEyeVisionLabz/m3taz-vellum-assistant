@@ -24,17 +24,11 @@ import { toast } from "@vellum/design-library/components/toast";
 import {
   assistantsListOptions,
 } from "@/generated/api/@tanstack/react-query.gen";
-import {
-  configGet,
-  configPatch,
-  secretsPost,
-  modelImagegenPut,
-} from "@/generated/daemon/sdk.gen";
+import { configGet, configPatch, secretsPost, modelImagegenPut } from "@/generated/daemon/sdk.gen";
 import { captureError } from "@/lib/sentry/capture-error";
 import { assistantDaemonConfigQueryKey } from "@/lib/sync/query-tags";
-import { assertProvisionSuccess } from "@/domains/settings/ai/ai-utils";
-import type { DaemonConfig, ProfileEntry } from "@/domains/settings/ai/ai-types";
-import type { CallSiteOverrideDraft } from "@/domains/settings/ai/call-site-overrides-modal";
+import { assertProvisionSuccess, buildOrderedProfiles } from "@/domains/settings/ai/ai-utils";
+import type { CallSiteOverrideDraft, DaemonConfig, ProfileEntry } from "@/domains/settings/ai/ai-types";
 
 /**
  * Hook providing the daemon config query and common mutation helpers.
@@ -89,6 +83,10 @@ export function useDaemonConfig() {
     () => config?.llm?.callSites ?? {},
     [config?.llm?.callSites],
   );
+  const orderedProfiles = useMemo(
+    () => buildOrderedProfiles(profiles, profileOrder),
+    [profiles, profileOrder],
+  );
 
   const invalidateConfig = useCallback(() => {
     void queryClient.invalidateQueries({
@@ -127,25 +125,6 @@ export function useDaemonConfig() {
     [resolveAssistantId],
   );
 
-  const patchConfigMutation = useMutation({
-    mutationFn: async (vars: {
-      assistantId: string;
-      partial: Record<string, unknown>;
-    }) => {
-      const { data } = await configPatch({
-        path: { assistant_id: vars.assistantId },
-        body: vars.partial,
-        throwOnError: true,
-      });
-      return data;
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({
-        queryKey: assistantDaemonConfigQueryKey(assistantId),
-      });
-    },
-  });
-
   const patchDaemonConfig = useCallback(
     async (partial: Record<string, unknown>): Promise<void> => {
       const resolvedId = await resolveAssistantId();
@@ -154,34 +133,21 @@ export function useDaemonConfig() {
         throw new Error("No assistant found");
       }
       try {
-        await patchConfigMutation.mutateAsync({
-          assistantId: resolvedId,
-          partial,
+        await configPatch({
+          path: { assistant_id: resolvedId },
+          body: partial,
+          throwOnError: true,
         });
       } catch (error) {
         toast.error("Failed to update assistant configuration. Please try again.");
         captureError(error, { context: "patch_daemon_config" });
         throw error;
+      } finally {
+        invalidateConfig();
       }
     },
-    [patchConfigMutation, resolveAssistantId],
+    [resolveAssistantId, invalidateConfig],
   );
-
-  const putImageGenModelMutation = useMutation({
-    mutationFn: async (vars: { assistantId: string; modelId: string }) => {
-      const { data } = await modelImagegenPut({
-        path: { assistant_id: vars.assistantId },
-        body: { modelId: vars.modelId },
-        throwOnError: true,
-      });
-      return data;
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({
-        queryKey: assistantDaemonConfigQueryKey(assistantId),
-      });
-    },
-  });
 
   const setImageGenModelOnDaemon = useCallback(
     async (modelId: string): Promise<void> => {
@@ -191,17 +157,20 @@ export function useDaemonConfig() {
         throw new Error("No assistant found");
       }
       try {
-        await putImageGenModelMutation.mutateAsync({
-          assistantId: resolvedId,
-          modelId,
+        await modelImagegenPut({
+          path: { assistant_id: resolvedId },
+          body: { modelId },
+          throwOnError: true,
         });
       } catch (error) {
         toast.error("Failed to update image generation model. Please try again.");
         captureError(error, { context: "set_image_gen_model" });
         throw error;
+      } finally {
+        invalidateConfig();
       }
     },
-    [putImageGenModelMutation, resolveAssistantId],
+    [resolveAssistantId, invalidateConfig],
   );
 
   return {
@@ -211,6 +180,7 @@ export function useDaemonConfig() {
     configQuery,
     profiles,
     profileOrder,
+    orderedProfiles,
     activeProfile,
     callSites,
     invalidateConfig,

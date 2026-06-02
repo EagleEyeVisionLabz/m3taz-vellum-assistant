@@ -10,7 +10,7 @@ import { Tag } from "@vellum/design-library/components/tag";
 import { Typography } from "@vellum/design-library/components/typography";
 import { useAssistantFeatureFlagStore } from "@/stores/assistant-feature-flag-store";
 
-import type { DaemonConfig, ProfileEntry } from "@/domains/settings/ai/ai-types";
+import type { DaemonConfig, ProfileEntry, ProfileWithName } from "@/domains/settings/ai/ai-types";
 import { ProfileEditorModal } from "@/domains/settings/ai/profile-editor-modal";
 import {
   AUTO_PROFILE_NAME,
@@ -24,24 +24,6 @@ import { assistantDaemonConfigQueryKey } from "@/lib/sync/query-tags";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-export interface Profile {
-  name: string;
-  source?: "managed" | "user";
-  status?: "active" | "disabled";
-  label?: string | null;
-  description?: string | null;
-  provider?: string | null;
-  provider_connection?: string | null;
-  model?: string | null;
-  maxTokens?: number;
-  effort?: string;
-  speed?: string;
-  verbosity?: string;
-  temperature?: number | null;
-  thinking?: { enabled?: boolean; streamThinking?: boolean; level?: string };
-  contextWindow?: { maxInputTokens?: number };
-}
 
 interface BlockedDeleteState {
   name: string;
@@ -57,30 +39,6 @@ interface ManageProfilesModalProps {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function profileEntryToProfile(name: string, entry: ProfileEntry): Profile {
-  return {
-    name,
-    source: entry.source,
-    status: entry.status ?? "active",
-    label: entry.label ?? undefined,
-    description: entry.description ?? undefined,
-    provider: entry.provider ?? undefined,
-    provider_connection: entry.provider_connection ?? undefined,
-    model: entry.model ?? undefined,
-    maxTokens: entry.maxTokens,
-    effort: entry.effort,
-    speed: entry.speed,
-    verbosity: entry.verbosity,
-    temperature: entry.temperature,
-    thinking: entry.thinking,
-    contextWindow: entry.contextWindow,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // ManageProfilesModal
 // ---------------------------------------------------------------------------
 
@@ -92,6 +50,7 @@ export function ManageProfilesModal({
   const {
     profiles,
     profileOrder,
+    orderedProfiles,
     activeProfile,
     callSites,
   } = useDaemonConfig();
@@ -99,7 +58,7 @@ export function ManageProfilesModal({
 
   const openAICompatibleEndpoints = useAssistantFeatureFlagStore.use.openAICompatibleEndpoints();
   const [editorOpen, setEditorOpen] = useState(false);
-  const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
+  const [editingProfile, setEditingProfile] = useState<ProfileWithName | null>(null);
 
   // Provider connections — shared TanStack Query cache with ManageProvidersModal.
   const { data: connectionsData } = useQuery({
@@ -186,6 +145,7 @@ export function ManageProfilesModal({
           <ManageProfilesModalInner
             profiles={profiles}
             profileOrder={profileOrder}
+            orderedProfiles={orderedProfiles}
             activeProfile={activeProfile}
             assistantId={assistantId}
             callSiteOverrides={callSites}
@@ -232,17 +192,19 @@ export function ManageProfilesModal({
 interface ManageProfilesModalInnerProps {
   profiles: Record<string, ProfileEntry>;
   profileOrder: string[];
+  orderedProfiles: ProfileWithName[];
   activeProfile: string | null;
   assistantId: string;
   callSiteOverrides: Record<string, { profile?: string | null } | null | undefined>;
   onClose: () => void;
-  onEditClick: (profile: Profile) => void;
+  onEditClick: (profile: ProfileWithName) => void;
   onNewClick: () => void;
 }
 
 function ManageProfilesModalInner({
   profiles,
   profileOrder,
+  orderedProfiles,
   activeProfile,
   assistantId,
   callSiteOverrides,
@@ -276,22 +238,12 @@ function ManageProfilesModalInner({
   const queryComplexityRouting = useAssistantFeatureFlagStore.use.queryComplexityRouting();
 
   // Build ordered profile list
-  const allOrderedProfiles: Profile[] = useMemo(() => {
-    const ordered = profileOrder
-      .filter((name) => name in profiles)
-      .map((name) => profileEntryToProfile(name, profiles[name]!));
-    const inOrder = new Set(profileOrder);
-    const extras = Object.entries(profiles)
-      .filter(([name]) => !inOrder.has(name))
-      .map(([name, entry]) => profileEntryToProfile(name, entry));
-    return gateAutoProfile(
-      [...ordered, ...extras],
-      queryComplexityRouting,
-    );
-  }, [profiles, profileOrder, queryComplexityRouting]);
+  const allOrderedProfiles: ProfileWithName[] = useMemo(() => {
+    return gateAutoProfile(orderedProfiles, queryComplexityRouting);
+  }, [orderedProfiles, queryComplexityRouting]);
 
   async function handleStatusToggle(
-    profile: Profile,
+    profile: ProfileWithName,
     active: boolean,
   ): Promise<boolean> {
     if (togglingNames.has(profile.name)) return false;
@@ -745,7 +697,7 @@ function BlockedDeleteModal({
   onConfirm,
 }: {
   blocked: BlockedDeleteState | null;
-  availableReplacements: Profile[];
+  availableReplacements: ProfileWithName[];
   replacement: string;
   onReplacementChange: (value: string) => void;
   error: string | null;
