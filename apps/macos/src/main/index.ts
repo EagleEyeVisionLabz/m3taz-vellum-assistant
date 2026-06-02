@@ -4,9 +4,15 @@ import fs from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 
+import {
+  readAllowedGatewayPorts,
+  resolveLockfilePaths,
+} from "@vellumai/local-mode";
+
 import { installAbout, openAboutWindow } from "./about";
 import { APP_PROTOCOL } from "./app-config";
 import { resolveAppProtocolPath } from "./app-protocol";
+import { planGatewayForward } from "./gateway-forward";
 import {
   extractDeepLinkFromArgv,
   handleDeepLink,
@@ -101,8 +107,19 @@ const registerAppProtocol = (): void => {
   // ../renderer relative to the main process bundle.
   const rendererRoot = path.join(__dirname, "../renderer");
   const indexHtml = path.join(rendererRoot, "index.html");
+  const lockfilePaths = resolveLockfilePaths(process.env);
+  const getAllowedGatewayPorts = (): Set<number> =>
+    readAllowedGatewayPorts(lockfilePaths);
 
   protocol.handle(APP_PROTOCOL, async (request) => {
+    // The renderer addresses local gateways at the same `app://` origin via
+    // `/assistant/__gateway/{port}/*`. Forward those to loopback here so the
+    // secure renderer never touches an insecure `http://127.0.0.1` origin
+    // directly; the lockfile allowlist is the security boundary. Mirrors the
+    // Vite dev-server proxy (`apps/web/vite-plugin-local-mode.ts`).
+    const proxied = await forwardGatewayRequest(request, getAllowedGatewayPorts);
+    if (proxied) return proxied;
+
     const result = resolveAppProtocolPath(
       rendererRoot,
       request.url,
@@ -129,6 +146,39 @@ const fileExists = async (candidate: string): Promise<boolean> => {
     return stat.isFile();
   } catch {
     return false;
+  }
+};
+
+/**
+ * Forward a gateway data-plane request (`/assistant/__gateway/{port}/*`) to the
+ * local gateway on loopback, or return `null` when the URL is not a gateway
+ * request so the caller serves it as a static asset. `net.fetch` runs in the
+ * main process, so the renderer only ever talks to its own secure `app://`
+ * origin — main does the `http://127.0.0.1` hop. The streaming `Response` is
+ * returned verbatim, preserving SSE and chunked transfers (Electron's
+ * `stream: true` scheme privilege). `planGatewayForward` owns the allowlist and
+ * header decisions; this wrapper is just the effect.
+ */
+const forwardGatewayRequest = async (
+  request: GlobalRequest,
+  getAllowedPorts: () => Set<number>,
+): Promise<Response | null> => {
+  const plan = planGatewayForward(request, getAllowedPorts);
+  switch (plan.kind) {
+    case "pass":
+      return null;
+    case "reject":
+      return new Response(plan.message, { status: plan.status });
+    case "forward":
+      return net.fetch(plan.url, {
+        method: plan.method,
+        headers: plan.headers,
+        body: plan.hasBody ? request.body : undefined,
+        // Stream the request body instead of buffering it; required by the
+        // fetch spec whenever a `ReadableStream` body is supplied.
+        ...(plan.hasBody ? { duplex: "half" } : {}),
+        redirect: "manual",
+      });
   }
 };
 
