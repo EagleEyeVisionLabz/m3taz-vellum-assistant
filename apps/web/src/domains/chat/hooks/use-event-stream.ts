@@ -188,17 +188,24 @@ export function useEventStream({
       activeConversationIdRef: activeConversationIdLatestRef,
       handleStreamEvent: (event, epoch) =>
         handleStreamEventRef.current(event, epoch),
-      reconcileActive: () => {
-        void reconcileActiveConversationRef.current();
-      },
+      reconcileActive: () => reconcileActiveConversationRef.current(),
     });
 
     const unsubEvent = subscribe("sse.event", (envelope) =>
       consumer.handleSseEvent(envelope),
     );
 
+    // clientSeq resets to 1 on each new SSE subscription (fresh
+    // server-side counter map). Reset the consumer's seq tracking on
+    // reconnect so the first post-reconnect event re-seeds the cursor
+    // instead of triggering a false generation reset.
+    const unsubOpened = subscribe("sse.opened", () =>
+      consumer.notifyReconnect(),
+    );
+
     return () => {
       unsubEvent();
+      unsubOpened();
       useStreamStore.getState().bumpEpoch();
       // Clear stream/context only if they still belong to this
       // subscription — a newer subscription may have already replaced
