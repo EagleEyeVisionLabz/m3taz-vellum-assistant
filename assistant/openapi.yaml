@@ -19478,6 +19478,8 @@ paths:
                               type: string
                             description:
                               type: string
+                            icon:
+                              type: string
                             emoji:
                               type: string
                             kind:
@@ -19522,6 +19524,8 @@ paths:
                             name:
                               type: string
                             description:
+                              type: string
+                            icon:
                               type: string
                             emoji:
                               type: string
@@ -19587,6 +19591,8 @@ paths:
                             name:
                               type: string
                             description:
+                              type: string
+                            icon:
                               type: string
                             emoji:
                               type: string
@@ -19667,6 +19673,8 @@ paths:
                             name:
                               type: string
                             description:
+                              type: string
+                            icon:
                               type: string
                             emoji:
                               type: string
@@ -19832,6 +19840,8 @@ paths:
                             type: string
                           description:
                             type: string
+                          icon:
+                            type: string
                           emoji:
                             type: string
                           kind:
@@ -19876,6 +19886,8 @@ paths:
                           name:
                             type: string
                           description:
+                            type: string
+                          icon:
                             type: string
                           emoji:
                             type: string
@@ -19996,6 +20008,8 @@ paths:
                             type: string
                           description:
                             type: string
+                          icon:
+                            type: string
                           emoji:
                             type: string
                           kind:
@@ -20075,6 +20089,8 @@ paths:
                           name:
                             type: string
                           description:
+                            type: string
+                          icon:
                             type: string
                           emoji:
                             type: string
@@ -20250,6 +20266,8 @@ paths:
                             type: string
                           description:
                             type: string
+                          icon:
+                            type: string
                           emoji:
                             type: string
                           kind:
@@ -20294,6 +20312,8 @@ paths:
                           name:
                             type: string
                           description:
+                            type: string
+                          icon:
                             type: string
                           emoji:
                             type: string
@@ -20359,6 +20379,8 @@ paths:
                           name:
                             type: string
                           description:
+                            type: string
+                          icon:
                             type: string
                           emoji:
                             type: string
@@ -20439,6 +20461,8 @@ paths:
                           name:
                             type: string
                           description:
+                            type: string
+                          icon:
                             type: string
                           emoji:
                             type: string
@@ -20762,6 +20786,8 @@ paths:
                               type: string
                             description:
                               type: string
+                            icon:
+                              type: string
                             emoji:
                               type: string
                             kind:
@@ -20806,6 +20832,8 @@ paths:
                             name:
                               type: string
                             description:
+                              type: string
+                            icon:
                               type: string
                             emoji:
                               type: string
@@ -20871,6 +20899,8 @@ paths:
                             name:
                               type: string
                             description:
+                              type: string
+                            icon:
                               type: string
                             emoji:
                               type: string
@@ -20951,6 +20981,8 @@ paths:
                             name:
                               type: string
                             description:
+                              type: string
+                            icon:
                               type: string
                             emoji:
                               type: string
