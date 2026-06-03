@@ -24,6 +24,7 @@
  * Response body: `{ token, expiresAt, guardianId, assistantId }`
  */
 
+import { mintAndRecordDeviceBoundAccessToken } from "../../auth/guardian-bootstrap.js";
 import { CURRENT_POLICY_EPOCH } from "../../auth/policy.js";
 import { mintToken } from "../../auth/token-service.js";
 import { KNOWN_EXTENSION_ORIGINS } from "../../chrome-extension-origins.js";
@@ -282,6 +283,29 @@ export async function handlePair(
   const guardianPrincipalId = await resolveLocalGuardianPrincipalId();
   const assistantId = getExternalAssistantId();
 
+  // Optionally, a client may supply a deviceId to receive a device-bound,
+  // DB-recorded, refreshable token pair (revocable per device) instead of the
+  // legacy stateless token. The body is optional — a malformed or absent body
+  // simply leaves deviceId undefined and preserves the stateless path.
+  let deviceId: string | undefined;
+  let bodyPlatform: string | undefined;
+  if ((req.headers.get("content-type") ?? "").includes("json")) {
+    try {
+      const body = (await req.json()) as {
+        deviceId?: unknown;
+        platform?: unknown;
+      };
+      if (typeof body.deviceId === "string" && body.deviceId.trim()) {
+        deviceId = body.deviceId.trim();
+      }
+      if (typeof body.platform === "string" && body.platform.trim()) {
+        bodyPlatform = body.platform.trim();
+      }
+    } catch {
+      // Ignore malformed/empty body — fall back to the stateless path.
+    }
+  }
+
   if (interfaceId === "chrome-extension") {
     // Require the request to originate from a known Vellum extension origin.
     //
@@ -305,6 +329,34 @@ export async function handlePair(
         "origin does not match a known Vellum extension",
         403,
       );
+    }
+
+    // Device-bound path: mint a recorded, per-device-revocable access token on
+    // the same short pair TTL as the stateless path. No refresh token is
+    // issued — until hot-path revocation is enforced, a long-lived refresh
+    // could silently re-mint long access tokens, so refreshable pairing is
+    // deferred. The recorded token becomes immediately revocable once the
+    // revocation check lands; in the interim the short TTL bounds its reach.
+    if (deviceId) {
+      const platform = bodyPlatform ?? interfaceId;
+      const access = mintAndRecordDeviceBoundAccessToken({
+        guardianPrincipalId,
+        deviceId,
+        platform,
+        ttlSeconds: PAIR_TOKEN_TTL_SECONDS,
+      });
+
+      log.info(
+        { interfaceId, clientId, guardianPrincipalId, platform },
+        "Client paired successfully via loopback (device-bound)",
+      );
+
+      return Response.json({
+        token: access.accessToken,
+        expiresAt: new Date(access.accessTokenExpiresAt).toISOString(),
+        guardianId: guardianPrincipalId,
+        assistantId,
+      });
     }
 
     const expiresAt = Date.now() + PAIR_TOKEN_TTL_SECONDS * 1000;
