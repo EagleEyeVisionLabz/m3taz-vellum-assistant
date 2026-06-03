@@ -6,6 +6,11 @@ extraResources:
   - from: resources/bun
     to: bun
 afterPack: ./scripts/afterPack.js
+protocols:
+  - name: Vellum Deep Links
+    schemes:
+      - vellum
+      - vellum-assistant
 mac:
   category: public.app-category.productivity
   hardenedRuntime: true
