@@ -10,9 +10,11 @@ import {
   getLocalTokenUrl,
 } from "@/lib/auth/gateway-session";
 import { setSelfHostedConnection } from "@/lib/self-hosted/connection";
+import { useLockfileStore } from "@/stores/lockfile-store";
 import {
   fetchGuardianTokenHost,
   loadLockfileHost,
+  parseLockfile,
   replacePlatformAssistantsHost,
   retireLocalAssistantHost,
   saveLockfileAssistantHost,
@@ -39,15 +41,28 @@ export type {
 };
 
 // ---------------------------------------------------------------------------
-// Module-level cache
+// Cache
 // ---------------------------------------------------------------------------
 
-let lockfile: Lockfile | null = null;
+// The cache lives in the lockfile store so React consumers can subscribe to
+// changes; this module owns the transport and is the only writer.
+const getCachedLockfile = (): Lockfile | null =>
+  useLockfileStore.getState().lockfile;
+const setCachedLockfile = (data: Lockfile): void =>
+  useLockfileStore.getState().setLockfile(data);
 
 const EMPTY_LOCKFILE: Lockfile = { assistants: [], activeAssistant: null };
 
 const LOCKFILE_STORAGE_KEY = "vellum:local:lockfile";
 const SELECTED_ASSISTANT_STORAGE_KEY = "vellum:local:selectedAssistantId";
+
+// Advance the in-memory cache and mirror the lockfile to persisted storage in
+// one step. The mirror lets the synchronous `getLockfile()` hydrate from
+// storage on a cold read before the host transport has responded.
+const commitLockfile = (data: Lockfile): void => {
+  setCachedLockfile(data);
+  setLocalSetting(LOCKFILE_STORAGE_KEY, JSON.stringify(data));
+};
 
 // ---------------------------------------------------------------------------
 // Core helpers
@@ -64,30 +79,34 @@ export function isLocalMode(): boolean {
 export async function loadLockfile(): Promise<Lockfile> {
   try {
     const data = await loadLockfileHost();
-    lockfile = data;
-    setLocalSetting(LOCKFILE_STORAGE_KEY, JSON.stringify(data));
+    commitLockfile(data);
     return data;
   } catch {
-    lockfile = { ...EMPTY_LOCKFILE };
-    return lockfile;
+    const empty = { ...EMPTY_LOCKFILE };
+    setCachedLockfile(empty);
+    return empty;
   }
 }
 
 export function getLockfile(): Lockfile {
-  if (lockfile) return lockfile;
+  const cached = getCachedLockfile();
+  if (cached) return cached;
 
   const stored = getLocalSetting(LOCKFILE_STORAGE_KEY, "");
   if (stored) {
     try {
-      lockfile = JSON.parse(stored) as Lockfile;
-      return lockfile;
+      const parsed = parseLockfile(JSON.parse(stored));
+      setCachedLockfile(parsed);
+      return parsed;
     } catch {
-      // Corrupted storage -- fall through to empty lockfile.
+      // Unparseable JSON -- fall through to empty lockfile. (A structurally
+      // invalid lockfile does not throw: parseLockfile salvages what it can.)
     }
   }
 
-  lockfile = { ...EMPTY_LOCKFILE };
-  return lockfile;
+  const empty = { ...EMPTY_LOCKFILE };
+  setCachedLockfile(empty);
+  return empty;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,8 +115,8 @@ export function getLockfile(): Lockfile {
 
 /**
  * Write an assistant entry to the lockfile on disk and refresh the cache,
- * making it the active assistant. Silently no-ops on a write failure, matching
- * the prior behaviour where the cache is only updated on success.
+ * making it the active assistant. Silently no-ops on a write failure: the
+ * cache only advances once the on-disk write succeeds.
  */
 export async function saveLockfileAssistant(
   assistant: { assistantId: string; cloud: string; runtimeUrl: string; hatchedAt: string },
@@ -107,8 +126,7 @@ export async function saveLockfileAssistant(
     assistant.assistantId,
   );
   if (result.ok) {
-    lockfile = result.lockfile;
-    setLocalSetting(LOCKFILE_STORAGE_KEY, JSON.stringify(result.lockfile));
+    commitLockfile(result.lockfile);
   }
 }
 
@@ -130,8 +148,7 @@ export async function syncPlatformAssistantsToLockfile(
 
   const result = await replacePlatformAssistantsHost(platformAssistants);
   if (result.ok) {
-    lockfile = result.lockfile;
-    setLocalSetting(LOCKFILE_STORAGE_KEY, JSON.stringify(result.lockfile));
+    commitLockfile(result.lockfile);
   }
 }
 
@@ -173,15 +190,26 @@ export function isLocalAssistant(a: LockfileAssistant): boolean {
   return a.cloud !== "vellum" && a.resources?.gatewayPort != null;
 }
 
+export function isPlatformAssistant(a: LockfileAssistant): boolean {
+  return a.cloud === "vellum";
+}
+
 export function getLocalAssistants(): LockfileAssistant[] {
   return getLockfile().assistants.filter(isLocalAssistant);
 }
 
 export function getPlatformAssistants(): LockfileAssistant[] {
-  return getLockfile().assistants.filter((a) => a.cloud === "vellum");
+  return getLockfile().assistants.filter(isPlatformAssistant);
 }
 
-function getActiveAssistant(): LockfileAssistant | undefined {
+/**
+ * The lockfile's active assistant, or — when the recorded `activeAssistant`
+ * no longer resolves but exactly one assistant exists — that sole assistant.
+ * Returns `undefined` when the active id is stale and the choice is ambiguous,
+ * so callers fall back deliberately rather than silently binding to a
+ * positional entry that may shadow the real active assistant.
+ */
+export function getActiveAssistant(): LockfileAssistant | undefined {
   const lf = getLockfile();
   const active = lf.assistants.find(
     (a) => a.assistantId === lf.activeAssistant,

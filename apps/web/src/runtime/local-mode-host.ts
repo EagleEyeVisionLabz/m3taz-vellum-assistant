@@ -1,3 +1,4 @@
+import { parseLockfile } from "@vellumai/local-mode/contract";
 import type {
   Lockfile,
   LockfileAssistant,
@@ -45,6 +46,11 @@ export type {
   LockfileWriteResult,
 };
 
+// The contract's validating parser, re-exported so `lib/` can run persisted
+// (localStorage) lockfile reads through the same total validation the hosts
+// apply to on-disk reads, without importing the package directly.
+export { parseLockfile };
+
 export interface LocalHatchResult {
   ok: boolean;
   assistantId?: string;
@@ -54,6 +60,27 @@ export interface LocalHatchResult {
 export interface LocalRetireResult {
   ok: boolean;
   error?: string;
+}
+
+/**
+ * Thrown by {@link fetchGuardianTokenHost} when a host returns a structured
+ * guardian-token failure. Carries the host's `status` so callers can branch on
+ * the failure class — a missing (`404`) or expired (`401`) token means the
+ * assistant must be re-provisioned (hatch/wake), whereas a `403`/`5xx`/network
+ * failure is transient and worth retrying — instead of string-matching the
+ * message. Both hosts already produce the status (the package's
+ * `getGuardianAccessToken` `TokenResult`, mirrored into the dev server's HTTP
+ * status code); this preserves it across the seam rather than collapsing it
+ * into a bare `Error`.
+ */
+export class GuardianTokenError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "GuardianTokenError";
+    this.status = status;
+  }
 }
 
 /**
@@ -167,14 +194,16 @@ export async function retireLocalAssistantHost(
  * it via the CLI is a trusted disk/CLI operation, so it runs in the host:
  * the Electron main process behind `window.vellum.localMode.guardianToken`,
  * the Vite dev server behind `/assistant/__local/guardian-token/{id}`. Throws
- * on failure so callers surface the same connect error regardless of host.
+ * a {@link GuardianTokenError} carrying the host's status on failure, so
+ * callers surface the same connect error — and can branch on the failure
+ * class — regardless of host.
  */
 export async function fetchGuardianTokenHost(
   assistantId: string,
 ): Promise<string> {
   if (isElectron()) {
     const result = await window.vellum!.localMode.guardianToken(assistantId);
-    if (!result.ok) throw new Error(result.error);
+    if (!result.ok) throw new GuardianTokenError(result.status, result.error);
     return result.accessToken;
   }
 
@@ -183,7 +212,8 @@ export async function fetchGuardianTokenHost(
   );
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(
+    throw new GuardianTokenError(
+      res.status,
       body.error ?? `Guardian token request failed: ${res.status}`,
     );
   }
