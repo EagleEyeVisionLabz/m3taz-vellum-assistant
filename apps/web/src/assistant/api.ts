@@ -6,6 +6,7 @@ import {
 import {
   assistantsActivateCreate,
   assistantsBackupsCreate,
+  assistantsBackupsRestoreCreate,
   assistantsHatchCreate,
   assistantsList,
   assistantsRestartDetailCreate,
@@ -324,7 +325,24 @@ export async function listAssistantBackups(
   assertHasResponse(response, error, "Failed to list assistant backups.");
 
   if (response.ok) {
-    const body = data as {
+    const raw =
+      data && typeof data === "object" && !Array.isArray(data)
+        ? (data as Record<string, unknown>)
+        : {};
+
+    // Platform format: { backups: BackupItem[] }. Returned when the
+    // daemon SDK request falls through to Django (no self-hosted
+    // ingress to rewrite the URL to the gateway).
+    if (Array.isArray(raw.backups)) {
+      return {
+        ok: true,
+        status: response.status,
+        data: raw.backups as AssistantBackup[],
+      };
+    }
+
+    // Daemon/gateway format: { local: { snapshots }, offsite: [{ snapshots }] }
+    const body = raw as {
       local?: { snapshots?: DaemonSnapshot[] };
       offsite?: Array<{ snapshots?: DaemonSnapshot[] }>;
     };
@@ -422,11 +440,20 @@ export async function restoreAssistantBackup(
   assistantId: string,
   backup: AssistantBackup,
 ): Promise<RestoreBackupResult> {
-  const { data, error, response } = await backupsRestorePost({
-    path: { assistant_id: assistantId },
-    body: { path: backup.path ?? backup.snapshot_name },
-    throwOnError: false,
-  });
+  // Same routing split as createAssistantBackup.
+  const { data, error, response } = getSelfHostedIngressUrl()
+    ? await backupsRestorePost({
+        path: { assistant_id: assistantId },
+        body: { path: backup.path ?? backup.snapshot_name },
+        throwOnError: false,
+      })
+    : await assistantsBackupsRestoreCreate({
+        path: {
+          assistant_id: assistantId,
+          snapshot_name: backup.snapshot_name,
+        },
+        throwOnError: false,
+      });
 
   assertHasResponse(response, error, "Failed to restore assistant backup.");
 
