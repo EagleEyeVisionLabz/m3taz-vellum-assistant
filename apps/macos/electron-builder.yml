@@ -12,6 +12,7 @@ protocols:
       - vellum
       - vellum-assistant
 mac:
+  icon: build/icon.icns
   category: public.app-category.productivity
   hardenedRuntime: true
   entitlements: ./scripts/entitlements/app.plist
