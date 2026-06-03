@@ -105,6 +105,8 @@ export function PreChatFlow() {
   const showIOSAppStep = isIOSWeb && !readIOSAppDownloaded();
   const condensedPrechatFlag =
     useClientFeatureFlagStore.use.prechatOnboardingCondensedFlow();
+  const activationFlowEnabled =
+    useClientFeatureFlagStore.use.experimentActivationFlow20260603();
   const selfIntroGreetingEnabled =
     useClientFeatureFlagStore.use.selfIntroGreeting();
   const preferredFunnelVariant =
@@ -328,6 +330,7 @@ export function PreChatFlow() {
       userName,
       assistantName,
       selfIntroGreetingEnabled,
+      activationFlowEnabled,
       googleConnected,
       googleScopes,
       connectedScopes: args?.connectedScopes,
