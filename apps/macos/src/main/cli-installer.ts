@@ -8,8 +8,8 @@ import {
 } from "node:fs";
 import path from "node:path";
 
-// TODO(LUM-2191): auto-stamp in release workflow; bump manually until then.
-export const PINNED_CLI_VERSION = "0.8.6";
+// Auto-stamped by create-release-branch workflow.
+export const PINNED_CLI_VERSION = "0.8.7";
 
 /** Directory where the pinned CLI version is installed. */
 export function getCliInstallDir(): string {
