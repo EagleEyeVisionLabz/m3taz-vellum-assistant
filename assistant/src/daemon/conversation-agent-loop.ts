@@ -1939,8 +1939,7 @@ export async function runAgentLoopImpl(
           isTrustedActor,
           logger: rlog,
         });
-        runMessages = injection.messages;
-        return runMessages;
+        return injection.messages;
       },
     };
 
@@ -2025,7 +2024,7 @@ export async function runAgentLoopImpl(
       // `user-prompt-submit` hook (the default history-repair plugin runs
       // `repairHistory` there); widening that surface to deep-repair is
       // intentionally deferred until there's a concrete plugin-level use case.
-      const retryRepair = deepRepairHistory(runMessages);
+      const retryRepair = deepRepairHistory(updatedHistory);
       runMessages = retryRepair.messages;
       const retryStrip = stripHistoricalWebSearchResults(runMessages);
       runMessages = retryStrip.messages;
