@@ -3,6 +3,7 @@ import {
   ChartColumn,
   ChevronDown,
   ChevronUp,
+  Gift,
   LogOut,
   MessageSquareText,
   Settings as SettingsIcon,
@@ -168,24 +169,29 @@ function PreferencesMenuContent({
     <>
       <ThemeToggle className="px-2 py-0" />
 
-      {showBillingRows ? (
+      <div className="my-2 border-t border-[var(--border-subtle)]" />
+
+      {showBillingRows && effectiveBalance !== null ? (
         <div className="my-2">
           <CreditsCard
-            balance={
-              effectiveBalance !== null
-                ? formatWholeCredits(effectiveBalance)
-                : null
-            }
+            balance={formatWholeCredits(effectiveBalance)}
             onAddCredits={() => {
               onClose();
               navigate(routes.settings.billing);
             }}
-            onEarnCredits={() => {
-              onClose();
-              onEarnCredits();
-            }}
           />
         </div>
+      ) : null}
+
+      {showBillingRows ? (
+        <PanelItem
+          icon={Gift}
+          label="Earn Free Credits"
+          onSelect={() => {
+            onClose();
+            onEarnCredits();
+          }}
+        />
       ) : null}
 
       <PanelItem
