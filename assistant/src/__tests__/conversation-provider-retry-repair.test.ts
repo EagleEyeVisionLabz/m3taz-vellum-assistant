@@ -338,7 +338,12 @@ mock.module("../agent/loop.js", () => ({
           ],
         } as Message);
         // Progress was made — history grew
-        return { history, exitReason: null, appendedNewMessages: true };
+        return {
+          history,
+          exitReason: null,
+          appendedNewMessages: true,
+          newMessages: history.slice(messages.length),
+        };
       }
 
       // Context-too-large modes: keep failing when compaction can't help
@@ -385,6 +390,7 @@ mock.module("../agent/loop.js", () => ({
           history: [...messages],
           exitReason: null,
           appendedNewMessages: false,
+          newMessages: [],
         };
       }
 
@@ -403,7 +409,12 @@ mock.module("../agent/loop.js", () => ({
       };
       history.push(assistantMsg);
       onEvent({ type: "message_complete", message: assistantMsg });
-      return { history, exitReason: null, appendedNewMessages: true };
+      return {
+        history,
+        exitReason: null,
+        appendedNewMessages: true,
+        newMessages: history.slice(messages.length),
+      };
     }
   },
 }));
