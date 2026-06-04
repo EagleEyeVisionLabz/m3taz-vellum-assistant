@@ -10,11 +10,11 @@
  * history (and the blocks it captured), with no dependency on the agent loop's
  * closure state.
  *
- * It delegates to {@link applyRuntimeInjections} today. The remaining
- * orchestrator-side re-injection steps (memory-graph re-tracking, historical
- * web-search stripping, and the post-injection bookkeeping the loop records)
- * are expected to migrate here as the hook subsumes the loop's re-injection
- * ceremony.
+ * It delegates to {@link applyRuntimeInjections} and re-tracks the memory
+ * graph's cached nodes against the re-injected history. The remaining
+ * orchestrator-side re-injection steps (historical web-search stripping and
+ * the post-injection bookkeeping the loop records) are expected to migrate
+ * here as the hook subsumes the loop's re-injection ceremony.
  */
 
 import {
@@ -22,11 +22,35 @@ import {
   type RuntimeInjectionOptions,
   type RuntimeInjectionResult,
 } from "../../../../daemon/conversation-runtime-assembly.js";
+import type { ConversationGraphMemory } from "../../../../memory/graph/conversation-graph-memory.js";
 import type { Message } from "../../../../providers/types.js";
 
+/**
+ * Everything the hook needs in a single context: the resolved
+ * {@link RuntimeInjectionOptions} (spread top-level so each field stays
+ * individually addressable), the history to re-inject onto, and the
+ * conversation-scoped state the options bag cannot carry (graph handle and
+ * actor trust).
+ */
+export interface PostCompactContext extends RuntimeInjectionOptions {
+  /** Compacted message history to re-inject onto. */
+  history: Message[];
+  /** Per-conversation memory graph handle. */
+  graphMemory: ConversationGraphMemory;
+  /** True when the actor for this turn is trusted (guardian-class). */
+  isTrustedActor: boolean;
+}
+
 export default async function postCompactReinject(
-  history: Message[],
-  options: RuntimeInjectionOptions,
+  ctx: PostCompactContext,
 ): Promise<RuntimeInjectionResult> {
-  return applyRuntimeInjections(history, options);
+  const { history, graphMemory, isTrustedActor, ...options } = ctx;
+  const result = await applyRuntimeInjections(history, options);
+  // Re-track the nodes the memory graph last injected so they survive against
+  // the re-injected history. Untrusted actors and minimal-mode turns never
+  // received a memory-graph injection, so there is nothing to re-track.
+  if (isTrustedActor && options.mode !== "minimal") {
+    graphMemory.retrackCachedNodes();
+  }
+  return result;
 }

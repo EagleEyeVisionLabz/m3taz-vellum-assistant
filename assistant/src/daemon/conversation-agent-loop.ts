@@ -2060,7 +2060,7 @@ export async function runAgentLoopImpl(
         // stripInjectionsForCompaction() unconditionally removed the existing
         // NOW.md block, so re-inject the current content regardless of whether
         // compaction actually ran.
-        const injection = await postCompactReinject(ctx.messages, {
+        const injection = await postCompactReinject({
           ...injectionOpts,
           pkbContext: currentPkbContent,
           memoryV2Static: currentMemoryV2Static,
@@ -2076,11 +2076,11 @@ export async function runAgentLoopImpl(
             : injectionOpts.slackChronologicalMessages,
           mode: currentInjectionMode,
           turnContext: buildPluginTurnContext(ctx, reqId),
+          history: ctx.messages,
+          graphMemory: ctx.graphMemory,
+          isTrustedActor,
         });
         runMessages = injection.messages;
-        if (isTrustedActor && currentInjectionMode !== "minimal") {
-          ctx.graphMemory.retrackCachedNodes();
-        }
         const midLoopCompactStrip =
           stripHistoricalWebSearchResults(runMessages);
         if (midLoopCompactStrip.stats.blocksStripped > 0) {
