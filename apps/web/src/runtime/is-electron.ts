@@ -34,6 +34,21 @@ export type VellumCommand =
   | { kind: "markCurrentUnread" }
   | { kind: "logout" };
 
+/**
+ * Renderer-side mirror of `AssistantStatus` in
+ * `apps/macos/src/main/status.ts`. Inline for the same reason as
+ * `VellumCommand` — main, preload, and renderer each have their own TS
+ * project, and a tiny literal union is cheaper to mirror than to wire a
+ * cross-package import. The five states map to the menu-bar status dot the
+ * native app shows (`AppDelegate+MenuBar.swift`).
+ */
+export type AssistantStatus =
+  | "idle"
+  | "thinking"
+  | "error"
+  | "disconnected"
+  | "authFailed";
+
 declare global {
   interface Window {
     vellum?: {
@@ -54,6 +69,15 @@ declare global {
       };
       commands: {
         on(callback: (command: VellumCommand) => void): () => void;
+      };
+      // Optional: older Electron shells predate the status/icon channels. The
+      // macOS app and web bundle don't release together, so a newer renderer
+      // can run against an older preload; callers must guard on presence.
+      status?: {
+        setConnection(status: AssistantStatus): void;
+      };
+      icon?: {
+        setAvatar(png: Uint8Array | null): void;
       };
       dock: {
         setBadge(count: number): Promise<void>;

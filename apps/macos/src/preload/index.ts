@@ -67,6 +67,19 @@ export interface PowerEvent {
   kind: PowerEventKind;
 }
 
+/**
+ * Mirror of `AssistantStatus` in `apps/macos/src/main/status.ts`. Inlined for
+ * the same reason as the other bridge types: preload + main + renderer each
+ * have their own TS project. Drift surfaces as the main-side Zod schema
+ * rejecting an unknown status (the message drops silently), not a crash.
+ */
+export type AssistantStatus =
+  | "idle"
+  | "thinking"
+  | "error"
+  | "disconnected"
+  | "authFailed";
+
 export interface VellumBridge {
   platform: "electron";
   app: {
@@ -104,6 +117,30 @@ export interface VellumBridge {
      * close or hot-reload.
      */
     on(callback: (command: VellumCommand) => void): () => void;
+  };
+  status: {
+    /**
+     * Publish the assistant's connection status so the main process can
+     * drive the menu-bar (Tray) status dot and pulse. The renderer holds
+     * the live gateway/auth connection, so it's the source of truth; main
+     * owns only the presentation. Fire-and-forget — no acknowledgement.
+     */
+    setConnection(status: AssistantStatus): void;
+  };
+  icon: {
+    /**
+     * Publish the assistant's avatar as raw PNG bytes so the main process
+     * can drive both icon surfaces — the Dock icon (`app.dock.setIcon`) and
+     * the menu-bar (Tray) base image under the status dot — from one source.
+     * Pass `null` when the assistant has no custom avatar so main restores
+     * the bundled Vellum mark, mirroring the native app's avatar fallback.
+     *
+     * The renderer owns avatar identity and rasterization because Electron's
+     * `nativeImage` only decodes PNG/JPEG, not the trait-composited SVG; main
+     * owns per-surface masking (circular tray, rounded-rect dock).
+     * Fire-and-forget — no acknowledgement.
+     */
+    setAvatar(png: Uint8Array | null): void;
   };
   dock: {
     /**
@@ -276,6 +313,16 @@ const bridge: VellumBridge = {
       return () => {
         ipcRenderer.off("vellum:command", handler);
       };
+    },
+  },
+  status: {
+    setConnection: (status: AssistantStatus): void => {
+      ipcRenderer.send("vellum:status:connection", status);
+    },
+  },
+  icon: {
+    setAvatar: (png: Uint8Array | null): void => {
+      ipcRenderer.send("vellum:icon:setAvatar", png);
     },
   },
   dock: {
