@@ -17,7 +17,7 @@ import {
     AttachFileButton,
     ChatAttachmentsStrip,
 } from "@/domains/chat/components/chat-attachments/chat-attachments";
-import type { ChatAttachment } from "@/domains/chat/components/chat-attachments/use-chat-attachments";
+import type { ChatAttachment } from "@/domains/chat/composer-store";
 import { StreamingWaveform } from "@/domains/chat/components/chat-composer/streaming-waveform";
 import { LiveVoiceButton } from "@/domains/chat/components/live-voice-button";
 import {
