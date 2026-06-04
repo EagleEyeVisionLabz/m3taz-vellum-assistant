@@ -97,17 +97,14 @@ import type { UserPromptSubmitContext } from "../plugin-api/types.js";
 import { defaultCompactionTerminal } from "../plugins/defaults/compaction/terminal.js";
 import { deepRepairHistory } from "../plugins/defaults/history-repair/terminal.js";
 import postCompactReinject from "../plugins/defaults/memory-retrieval/hooks/post-compact.js";
-import {
-  type DefaultMemoryRetrievalDeps,
-  runDefaultMemoryRetrieval,
-} from "../plugins/defaults/memory-retrieval/register.js";
+import userPromptSubmitMemoryRetrieval, {
+  type MemoryRetrievalHookContext,
+} from "../plugins/defaults/memory-retrieval/hooks/user-prompt-submit-temp.js";
 import { DEFAULT_TIMEOUTS, runHook, runPipeline } from "../plugins/pipeline.js";
 import { getMiddlewaresFor } from "../plugins/registry.js";
 import type {
   CompactionArgs,
   CompactionResult,
-  MemoryArgs,
-  MemoryResult,
   OverflowReduceArgs,
   OverflowReduceResult,
   TurnContext as PluginTurnContext,
@@ -1150,33 +1147,17 @@ export async function runAgentLoopImpl(
 
     let runMessages = ctx.messages;
 
-    // Memory retrieval pipeline — fetches PKB, NOW.md, and memory-graph
-    // outputs through a single `memoryRetrieval` pipeline. Plugins may
-    // replace the terminal behavior by registering a middleware that
-    // short-circuits with its own `MemoryResult`; the default terminal runs
-    // `runDefaultMemoryRetrieval` (PKB/NOW reads + gated graph call), which
-    // also persists the retrieval's own side effects (injected-block
-    // metadata, recall log, `memory_recalled` event).
+    // Memory retrieval — fetches PKB, NOW.md, and memory-graph outputs and
+    // persists the retrieval's own side effects (injected-block metadata,
+    // recall log, `memory_recalled` event). Runs at the early "prompt
+    // submitted, before context assembly" moment because its outputs feed the
+    // injection and overflow-reduction transforms below. It is shaped as the
+    // `user-prompt-submit-temp` hook handler but invoked directly for now: it
+    // must run early, while the canonical late `user-prompt-submit` hook
+    // (history repair, title) runs after those transforms, so the two cannot
+    // share a fire site until compaction is cleared from the gap between them.
     const isTrustedActor = resolveTrustClass(ctx.trustContext) === "guardian";
-    // Canonical builder — pulls trust from per-turn snapshot, then
-    // conversation-level, then the synthetic fallback. Memory retrieval
-    // does not need the context-window handle the builder attaches, but
-    // keeping every call site on one helper is load-bearing for log
-    // coherence across pipeline slots.
-    const memoryPluginTurnCtx = buildPluginTurnContext(ctx, reqId);
-    const memoryArgs: MemoryArgs = {
-      conversationId: ctx.conversationId,
-      trustContext: ctx.trustContext,
-      turnIndex: ctx.turnCount,
-      // Pass the abort signal via `args` (not `deps`) so the pipeline
-      // runner's `linkAbortSignal` can swap it for a signal linked to the
-      // pipeline's internal controller — on a plugin-set timeout or
-      // external cancel, the linked signal aborts and `prepareMemory`
-      // stops mutating graph state / emitting events after the pipeline
-      // has already errored.
-      signal: abortController.signal,
-    };
-    const memoryDeps: DefaultMemoryRetrievalDeps = {
+    const memoryCtx: MemoryRetrievalHookContext = {
       messages: ctx.messages,
       graphMemory: ctx.graphMemory,
       config: getConfig(),
@@ -1185,21 +1166,20 @@ export async function runAgentLoopImpl(
       conversationId: ctx.conversationId,
       userMessageId,
       logger: rlog,
+      // An external cancel aborts `prepareMemory` instead of letting it run
+      // to completion after the turn has already been torn down.
+      signal: abortController.signal,
+      pkbContent: null,
+      nowContent: null,
+      graphResult: null,
     };
-    const memoryResult: MemoryResult = await runPipeline(
-      "memoryRetrieval",
-      getMiddlewaresFor("memoryRetrieval"),
-      (args) => runDefaultMemoryRetrieval(args, memoryDeps),
-      memoryArgs,
-      memoryPluginTurnCtx,
-      DEFAULT_TIMEOUTS.memoryRetrieval,
-    );
+    await userPromptSubmitMemoryRetrieval(memoryCtx);
 
     // Consume the memory-graph retrieval. The retriever owns its own side
     // effects (injected-block metadata, recall log, `memory_recalled` event);
     // here the loop only takes the turn-scoped context it reuses downstream —
     // the injected message list and the PKB query vectors.
-    const graphResult = memoryResult.graphResult;
+    const graphResult = memoryCtx.graphResult;
     let pkbQueryVector: number[] | undefined;
     let pkbSparseVector: QdrantSparseVector | undefined;
     if (graphResult) {
@@ -1383,20 +1363,19 @@ export async function runAgentLoopImpl(
     // Inject NOW.md and PKB content only on the first turn (or after
     // compaction re-strips them).  Old injections persist in history and
     // are never stripped on normal turns — this preserves the cached prefix.
-    // PKB/NOW content is sourced from the `memoryRetrieval` pipeline above
-    // so plugins can override either source without touching the agent loop.
+    // PKB/NOW content is sourced from the `user-prompt-submit-temp` hook above.
     // NOW.md injection can be disabled via `memory.retrieval.scratchpadInjection.enabled`.
     const scratchpadInjectionEnabled =
       getConfig().memory.retrieval.scratchpadInjection.enabled;
     const currentNowContent =
       personalMemoryAllowed && scratchpadInjectionEnabled
-        ? memoryResult.nowContent
+        ? memoryCtx.nowContent
         : null;
     const shouldInjectNowAndPkb = isFirstMessage || compactedThisTurn;
     const nowScratchpad = shouldInjectNowAndPkb ? currentNowContent : null;
 
     const currentPkbContent = personalMemoryAllowed
-      ? memoryResult.pkbContent
+      ? memoryCtx.pkbContent
       : null;
     const pkbContext = shouldInjectNowAndPkb ? currentPkbContent : null;
     const pkbActive = currentPkbContent !== null;
