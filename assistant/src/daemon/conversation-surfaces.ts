@@ -44,6 +44,7 @@ import type {
   DynamicPageSurfaceData,
   FormSurfaceData,
   ListSurfaceData,
+  OAuthConnectSurfaceData,
   ServerMessage,
   SurfaceData,
   SurfaceType,
@@ -454,6 +455,24 @@ function normalizeCopyBlockShowData(
     ...(typeof rawData.label === "string" ? { label: rawData.label } : {}),
     ...(typeof rawData.language === "string"
       ? { language: rawData.language }
+      : {}),
+  };
+}
+
+function normalizeOAuthConnectShowData(
+  rawData: Record<string, unknown>,
+): OAuthConnectSurfaceData {
+  return {
+    providerKey:
+      typeof rawData.providerKey === "string" ? rawData.providerKey.trim() : "",
+    ...(typeof rawData.displayName === "string"
+      ? { displayName: rawData.displayName }
+      : {}),
+    ...(typeof rawData.description === "string"
+      ? { description: rawData.description }
+      : {}),
+    ...(typeof rawData.logoUrl === "string" || rawData.logoUrl === null
+      ? { logoUrl: rawData.logoUrl }
       : {}),
   };
 }
@@ -1784,6 +1803,8 @@ export async function handleSurfaceAction(
   // been accepted. Deferred until after rejection check so the surface stays
   // active and retryable if the queue was full.
   const ONE_SHOT_SURFACE_TYPES = [
+    "choice",
+    "oauth_connect",
     "form",
     "confirmation",
     "file_upload",
@@ -1996,6 +2017,30 @@ export function buildCompletionSummary(
     }
     return `User chose: ${actionId}`;
   }
+  if (surfaceType === "oauth_connect") {
+    const providerLabel =
+      typeof data?.providerLabel === "string"
+        ? data.providerLabel
+        : typeof data?.displayName === "string"
+          ? data.displayName
+          : typeof data?.providerKey === "string"
+            ? data.providerKey
+            : "OAuth";
+    const accountLabel =
+      typeof data?.accountLabel === "string" ? data.accountLabel : undefined;
+    if (actionId === "connect" || data?.status === "connected") {
+      return accountLabel
+        ? `Connected ${providerLabel}: ${accountLabel}`
+        : `Connected ${providerLabel}`;
+    }
+    if (actionId === "cancel" || data?.status === "cancelled") {
+      return `Cancelled ${providerLabel} connection`;
+    }
+    if (data?.status === "error") {
+      return `${providerLabel} connection failed`;
+    }
+    return `${providerLabel} connection ${actionId}`;
+  }
   if (surfaceType === "list" && data) {
     const selectedIds = data.selectedIds as string[] | undefined;
     const actionSuffix = actionId ? ` (action: ${actionId})` : "";
@@ -2065,6 +2110,30 @@ function buildUserFacingLabel(
     if (selectedTitles.length > 1)
       return `Selected ${selectedTitles.length} options`;
     return "Selected";
+  }
+  if (surfaceType === "oauth_connect") {
+    const providerLabel =
+      typeof data?.providerLabel === "string"
+        ? data.providerLabel
+        : typeof data?.displayName === "string"
+          ? data.displayName
+          : typeof data?.providerKey === "string"
+            ? data.providerKey
+            : "OAuth";
+    const accountLabel =
+      typeof data?.accountLabel === "string" ? data.accountLabel : undefined;
+    if (actionId === "connect" || data?.status === "connected") {
+      return accountLabel
+        ? `Connected ${providerLabel}: ${accountLabel}`
+        : `Connected ${providerLabel}`;
+    }
+    if (actionId === "cancel" || data?.status === "cancelled") {
+      return "Cancelled";
+    }
+    if (data?.status === "error") {
+      return `${providerLabel} connection failed`;
+    }
+    return `Selected: ${actionId}`;
   }
 
   // Table / list selection actions
@@ -2335,9 +2404,11 @@ export async function surfaceProxyResolver(
           ? normalizeChoiceShowData(rawData)
           : surfaceType === "copy_block"
             ? normalizeCopyBlockShowData(rawData)
-            : surfaceType === "dynamic_page"
-              ? normalizeDynamicPageShowData(input, rawData)
-              : rawData
+            : surfaceType === "oauth_connect"
+              ? normalizeOAuthConnectShowData(rawData)
+              : surfaceType === "dynamic_page"
+                ? normalizeDynamicPageShowData(input, rawData)
+                : rawData
     ) as SurfaceData;
     const inputActions = input.actions as
       | Array<{
@@ -2357,6 +2428,20 @@ export async function surfaceProxyResolver(
       return {
         content:
           "choice surfaces require at least one option with both id and title.",
+        isError: true,
+      };
+    }
+    const oauthProviderKey =
+      surfaceType === "oauth_connect"
+        ? (data as unknown as Record<string, unknown>).providerKey
+        : undefined;
+    if (
+      surfaceType === "oauth_connect" &&
+      (typeof oauthProviderKey !== "string" ||
+        oauthProviderKey.trim().length === 0)
+    ) {
+      return {
+        content: "oauth_connect surfaces require data.providerKey.",
         isError: true,
       };
     }

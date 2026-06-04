@@ -9,7 +9,10 @@ mock.module("@/domains/chat/components/chat-markdown-message", () => ({
 
 import { ChoiceSurface } from "@/domains/chat/components/surfaces/choice-surface";
 import { CopyBlockSurface } from "@/domains/chat/components/surfaces/copy-block-surface";
+import { OAuthConnectSurface } from "@/domains/chat/components/surfaces/oauth-connect-surface";
 import { SurfaceRouter } from "@/domains/chat/components/surfaces/surface-router";
+import type { ManagedOAuthConnectClient } from "@/domains/chat/api/managed-oauth";
+import type { OAuthConnection } from "@/generated/api/types.gen";
 import type { Surface } from "@/domains/chat/types/types";
 
 afterAll(() => {
@@ -173,6 +176,99 @@ describe("CopyBlockSurface", () => {
   });
 });
 
+describe("OAuthConnectSurface", () => {
+  test("starts managed OAuth and submits the connected account", async () => {
+    const onAction = mock(() => {});
+    const oauthClient: ManagedOAuthConnectClient = {
+      fetchProvider: mock(async () => null),
+      connect: mock(async () => ({
+        status: "connected" as const,
+        connection: {
+          id: "conn-1",
+          provider: "google",
+          status: "ACTIVE",
+          connected: true,
+          account_label: "user@example.com",
+          scopes_granted: ["gmail.readonly"],
+          expires_at: null,
+        } as OAuthConnection,
+      })),
+    };
+
+    const { getByRole, queryByText } = render(
+      <OAuthConnectSurface
+        surface={makeSurface({
+          surfaceType: "oauth_connect",
+          title: "Connect Google",
+          data: {
+            providerKey: "google",
+            displayName: "Google",
+            description: "Connect Gmail for this task.",
+            connectLabel: "Connect Google Account",
+            requestedScopes: ["gmail.readonly"],
+          },
+        })}
+        assistantId="assistant-1"
+        oauthClient={oauthClient}
+        onAction={onAction}
+      />,
+    );
+
+    expect(queryByText("gmail.readonly")).toBeNull();
+    expect(queryByText("Connect Google Account")).toBeNull();
+
+    fireEvent.click(getByRole("button", { name: "Connect" }));
+
+    await waitFor(() => {
+      expect(oauthClient.connect).toHaveBeenCalledWith({
+        assistantId: "assistant-1",
+        providerKey: "google",
+        providerLabel: "Google",
+      });
+      expect(onAction).toHaveBeenCalledWith("surface-1", "connect", {
+        status: "connected",
+        providerKey: "google",
+        providerLabel: "Google",
+        connectionId: "conn-1",
+        accountLabel: "user@example.com",
+        scopesGranted: ["gmail.readonly"],
+      });
+    });
+  });
+
+  test("lets the user cancel without opening OAuth", () => {
+    const onAction = mock(() => {});
+    const oauthClient: ManagedOAuthConnectClient = {
+      fetchProvider: mock(async () => null),
+      connect: mock(async () => ({ status: "cancelled" as const })),
+    };
+
+    const { getByRole } = render(
+      <OAuthConnectSurface
+        surface={makeSurface({
+          surfaceType: "oauth_connect",
+          data: {
+            providerKey: "linear",
+            displayName: "Linear",
+          },
+        })}
+        assistantId="assistant-1"
+        oauthClient={oauthClient}
+        onAction={onAction}
+      />,
+    );
+
+    fireEvent.click(getByRole("button", { name: "Dismiss" }));
+
+    expect(oauthClient.connect).not.toHaveBeenCalled();
+    expect(onAction).toHaveBeenCalledWith("surface-1", "cancel", {
+      status: "cancelled",
+      providerKey: "linear",
+      providerLabel: "Linear",
+    });
+  });
+});
+
 describe("SurfaceRouter", () => {
   test("collapses completed choice surfaces into a completion chip", () => {
     const { queryByText, getByText } = render(
@@ -190,5 +286,25 @@ describe("SurfaceRouter", () => {
 
     expect(queryByText("Clean up my inbox")).toBeNull();
     expect(getByText('User chose: "Clean up my inbox"')).toBeTruthy();
+  });
+
+  test("collapses completed OAuth connect surfaces into a completion chip", () => {
+    const { queryByText, getByText } = render(
+      <SurfaceRouter
+        surface={makeSurface({
+          surfaceType: "oauth_connect",
+          completed: true,
+          completionSummary: "Connected Google: user@example.com",
+          data: {
+            providerKey: "google",
+            displayName: "Google",
+          },
+        })}
+        onAction={() => {}}
+      />,
+    );
+
+    expect(queryByText("Connect Google")).toBeNull();
+    expect(getByText("Connected Google: user@example.com")).toBeTruthy();
   });
 });
