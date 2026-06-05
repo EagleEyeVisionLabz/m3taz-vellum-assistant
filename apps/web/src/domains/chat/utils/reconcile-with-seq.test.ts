@@ -3,17 +3,15 @@ import { describe, expect, test } from "bun:test";
 import { reconcileMessagesWithSeq } from "@/domains/chat/utils/reconcile-with-seq";
 import type { DisplayMessage } from "@/domains/chat/types/types";
 import {
-  makeServerMessage,
   messageText,
   textBody,
-  wireTextBody,
-  wireTimestamp,
 } from "@/domains/chat/utils/message-test-helpers";
 
-// Test factory that produces a DisplayMessage with `id` assigned. Every
-// production construction site assigns `id`; tests must too so the type-level
-// requirement holds.
-function makeLocal(
+// Both sides of the merge are `DisplayMessage[]` (callers project the wire
+// snapshot at the reconcile boundary), so local and server rows share one
+// factory. `id` is assigned because every production construction site assigns
+// it, so the type-level requirement holds.
+function makeRow(
   overrides: Omit<DisplayMessage, "id"> & { id?: string },
 ): DisplayMessage {
   const { id, ...rest } = overrides;
@@ -29,7 +27,7 @@ describe("reconcileMessagesWithSeq", () => {
      */
     // GIVEN a fully-streamed assistant row applied by the stream
     const local = [
-      makeLocal({
+      makeRow({
         id: "a1",
         role: "assistant",
         ...textBody("Full streamed answer"),
@@ -39,11 +37,11 @@ describe("reconcileMessagesWithSeq", () => {
 
     // AND a stale snapshot that carries only a truncated prefix of that row
     const server = [
-      makeServerMessage({
+      makeRow({
         id: "a1",
         role: "assistant",
-        ...wireTextBody("Full str"),
-        timestamp: wireTimestamp(1000),
+        ...textBody("Full str"),
+        timestamp: 1000,
       }),
     ];
 
@@ -66,7 +64,7 @@ describe("reconcileMessagesWithSeq", () => {
      */
     // GIVEN a local row the snapshot supersedes
     const local = [
-      makeLocal({
+      makeRow({
         id: "a1",
         role: "assistant",
         ...textBody("partial"),
@@ -76,11 +74,11 @@ describe("reconcileMessagesWithSeq", () => {
 
     // AND a fresher server snapshot of the same row
     const server = [
-      makeServerMessage({
+      makeRow({
         id: "a1",
         role: "assistant",
-        ...wireTextBody("authoritative answer"),
-        timestamp: wireTimestamp(1000),
+        ...textBody("authoritative answer"),
+        timestamp: 1000,
       }),
     ];
 
@@ -102,7 +100,7 @@ describe("reconcileMessagesWithSeq", () => {
      */
     // GIVEN a local row and a differing server row
     const local = [
-      makeLocal({
+      makeRow({
         id: "a1",
         role: "assistant",
         ...textBody("local"),
@@ -110,11 +108,11 @@ describe("reconcileMessagesWithSeq", () => {
       }),
     ];
     const server = [
-      makeServerMessage({
+      makeRow({
         id: "a1",
         role: "assistant",
-        ...wireTextBody("server"),
-        timestamp: wireTimestamp(1000),
+        ...textBody("server"),
+        timestamp: 1000,
       }),
     ];
 
@@ -136,7 +134,7 @@ describe("reconcileMessagesWithSeq", () => {
      */
     // GIVEN a live local assistant row
     const local = [
-      makeLocal({
+      makeRow({
         id: "a1",
         role: "assistant",
         ...textBody("Streamed answer"),
@@ -146,17 +144,17 @@ describe("reconcileMessagesWithSeq", () => {
 
     // AND a stale snapshot that also carries a never-seen user row
     const server = [
-      makeServerMessage({
+      makeRow({
         id: "a1",
         role: "assistant",
-        ...wireTextBody("Stream"),
-        timestamp: wireTimestamp(1000),
+        ...textBody("Stream"),
+        timestamp: 1000,
       }),
-      makeServerMessage({
+      makeRow({
         id: "u2",
         role: "user",
-        ...wireTextBody("follow-up question"),
-        timestamp: wireTimestamp(1100),
+        ...textBody("follow-up question"),
+        timestamp: 1100,
       }),
     ];
 
@@ -181,7 +179,7 @@ describe("reconcileMessagesWithSeq", () => {
      */
     // GIVEN a local transcript with no duplicates
     const local = [
-      makeLocal({
+      makeRow({
         id: "a1",
         role: "assistant",
         ...textBody("answer"),
@@ -206,7 +204,7 @@ describe("reconcileMessagesWithSeq", () => {
      */
     // GIVEN a local window whose oldest row is at t=1000
     const local = [
-      makeLocal({
+      makeRow({
         id: "a1",
         role: "assistant",
         ...textBody("in-window"),
@@ -216,17 +214,17 @@ describe("reconcileMessagesWithSeq", () => {
 
     // AND a snapshot carrying an older row from before the window
     const server = [
-      makeServerMessage({
+      makeRow({
         id: "old",
         role: "user",
-        ...wireTextBody("ancient history"),
-        timestamp: wireTimestamp(10),
+        ...textBody("ancient history"),
+        timestamp: 10,
       }),
-      makeServerMessage({
+      makeRow({
         id: "a1",
         role: "assistant",
-        ...wireTextBody("in-window"),
-        timestamp: wireTimestamp(1000),
+        ...textBody("in-window"),
+        timestamp: 1000,
       }),
     ];
 
@@ -240,5 +238,48 @@ describe("reconcileMessagesWithSeq", () => {
     // THEN the pre-window row is dropped
     expect(result.find((m) => m.id === "old")).toBeUndefined();
     expect(result).toHaveLength(1);
+  });
+
+  test("folds an optimistic assistant tail into the confirmed server row", () => {
+    /**
+     * Against pre-anchor-protocol daemons a streamed assistant delta arrives
+     * with no `messageId`, so the live row stays optimistic with a client
+     * UUID. When the snapshot carries the same turn under its server id the
+     * optimistic prefix must collapse into it, not render as a second bubble.
+     */
+    // GIVEN an optimistic assistant tail (client UUID) holding a streamed prefix
+    const local = [
+      makeRow({ id: "u1", role: "user", ...textBody("hi"), timestamp: 1000 }),
+      makeRow({
+        id: "client-uuid",
+        isOptimistic: true,
+        role: "assistant",
+        ...textBody("Hello"),
+        timestamp: 1001,
+      }),
+    ];
+
+    // AND a snapshot carrying the same assistant turn under its server id
+    const server = [
+      makeRow({ id: "u1", role: "user", ...textBody("hi"), timestamp: 1000 }),
+      makeRow({
+        id: "srv-a1",
+        role: "assistant",
+        ...textBody("Hello there"),
+        timestamp: 1001,
+      }),
+    ];
+
+    // WHEN the merge runs with no honest seq (snapshot authoritative)
+    const result = reconcileMessagesWithSeq(local, server, {
+      snapshotSeq: null,
+      appliedSeq: null,
+    });
+
+    // THEN the optimistic prefix collapses into the single server row
+    const assistants = result.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]!.id).toBe("srv-a1");
+    expect(messageText(assistants[0])).toBe("Hello there");
   });
 });

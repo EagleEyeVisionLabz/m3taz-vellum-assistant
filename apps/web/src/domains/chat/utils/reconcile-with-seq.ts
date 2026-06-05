@@ -1,4 +1,3 @@
-import { mapRuntimeToDisplayMessage } from "@/domains/chat/utils/map-runtime-message";
 import {
   dedupeDisplayMessages,
   messagesEqual,
@@ -15,7 +14,6 @@ import {
 } from "@/domains/chat/utils/message-sorting";
 import { segmentsToPlainText } from "@/domains/chat/utils/segments-to-plain-text";
 import type { DisplayMessage } from "@/domains/chat/types/types";
-import type { ConversationMessage } from "@vellumai/assistant-api";
 
 /**
  * Seq-aware snapshot/stream reconciler (the ATL-781 monotonic merge).
@@ -43,9 +41,15 @@ import type { ConversationMessage } from "@vellumai/assistant-api";
  * Idempotent stream apply (events with `seq <= F` are no-ops) is enforced
  * upstream in the SSE consumer, so this merge never has to dedupe replays.
  *
+ * Both sides are already-projected `DisplayMessage[]`: callers project the
+ * wire `ConversationMessage[]` snapshot to display rows at the reconcile
+ * boundary (`reconcile-snapshot.ts`), and the initial-load path already holds
+ * display rows. Keeping the merge display-on-display makes it the single
+ * authoritative reconcile for every snapshot-apply site under the flag.
+ *
  * Gated behind `isSeqGapDetectionEnabled()`. While the flag is off, callers
- * use the legacy `reconcileMessages`; this module is the only path when it is
- * on, and the legacy one is removed when the flag graduates.
+ * use the legacy reconcilers; this module is the only path when it is on, and
+ * the legacy ones are removed when the flag graduates.
  */
 export interface ReconcileWithSeqOptions {
   /** Snapshot watermark `S` — how far `/messages` had persisted. */
@@ -67,7 +71,7 @@ export interface ReconcileWithSeqOptions {
  */
 export function reconcileMessagesWithSeq(
   local: DisplayMessage[],
-  server: ConversationMessage[],
+  server: DisplayMessage[],
   options: ReconcileWithSeqOptions,
 ): DisplayMessage[] {
   if (server.length === 0) {
@@ -126,9 +130,7 @@ export function reconcileMessagesWithSeq(
       // Authoritative snapshot, or a server row with no live local copy: take
       // the server row wholesale, carrying only the client-only blob
       // attachments the snapshot cannot represent.
-      return [
-        preserveClientAttachments(mapRuntimeToDisplayMessage(m), localMsg),
-      ];
+      return [preserveClientAttachments(m, localMsg)];
     });
 
   preserveUnreflectedLocalRows(reconciled, local, serverIds);
@@ -149,7 +151,7 @@ export function reconcileMessagesWithSeq(
  */
 function adoptServerIdentity(
   localMsg: DisplayMessage,
-  server: ConversationMessage,
+  server: DisplayMessage,
 ): DisplayMessage {
   const next: DisplayMessage = { ...localMsg, id: server.id };
 
@@ -204,10 +206,11 @@ function preserveClientAttachments(
 
 /**
  * Append local rows not yet reflected on the server so they don't vanish:
- *   1. Optimistic user rows (client UUID, never in `serverIds`) — matched by
- *      content to a reconciled server row; on a hit the client timestamp and
- *      blob attachments transfer to the server row and the optimistic row is
- *      dropped, otherwise it is preserved until the server echoes it back.
+ *   1. Optimistic rows (client UUID, never in `serverIds`) — matched by
+ *      content to a reconciled server row of the same role; on a hit the
+ *      client timestamp and blob attachments transfer to the server row and
+ *      the optimistic row is dropped, otherwise it is preserved until the
+ *      server echoes it back.
  *   2. Non-optimistic local rows whose id isn't on the server yet (brief
  *      replication lag or pagination) — preserved as-is.
  */
@@ -221,13 +224,8 @@ function preserveUnreflectedLocalRows(
       continue;
     }
 
-    if (m.isOptimistic && m.role === "user") {
-      const optimisticText = segmentsToPlainText(m.textSegments);
-      const match = reconciled.find(
-        (r) =>
-          r.role === "user" &&
-          segmentsToPlainText(r.textSegments) === optimisticText,
-      );
+    if (m.isOptimistic) {
+      const match = findOptimisticEcho(reconciled, m);
       if (match) {
         if (!match.timestamp && m.timestamp) {
           match.timestamp = m.timestamp;
@@ -235,11 +233,47 @@ function preserveUnreflectedLocalRows(
         if (m.attachments && m.attachments.length > 0) {
           match.attachments = m.attachments;
         }
-      } else {
-        reconciled.push(m);
+        continue;
       }
-    } else {
-      reconciled.push(m);
     }
+
+    reconciled.push(m);
   }
+}
+
+/**
+ * Resolve an optimistic local row to the reconciled server row it echoes:
+ *   - user rows match on exact derived text (the echo of what was sent before
+ *     the POST resolved);
+ *   - assistant rows match when the streamed local text is a non-empty prefix
+ *     of the server row's content — the live tail rendered before the daemon
+ *     assigned the row an id (only against pre-anchor-protocol daemons that
+ *     stream deltas without a `messageId`).
+ */
+function findOptimisticEcho(
+  reconciled: DisplayMessage[],
+  optimistic: DisplayMessage,
+): DisplayMessage | undefined {
+  if (optimistic.role === "user") {
+    const optimisticText = segmentsToPlainText(optimistic.textSegments);
+    return reconciled.find(
+      (r) =>
+        r.role === "user" &&
+        segmentsToPlainText(r.textSegments) === optimisticText,
+    );
+  }
+
+  if (optimistic.role === "assistant") {
+    const optimisticText = segmentsToPlainText(optimistic.textSegments).trim();
+    if (!optimisticText) {
+      return undefined;
+    }
+    return reconciled.find(
+      (r) =>
+        r.role === "assistant" &&
+        segmentsToPlainText(r.textSegments).trim().startsWith(optimisticText),
+    );
+  }
+
+  return undefined;
 }
