@@ -359,8 +359,6 @@ export function ChatRouteContent({
   const isSubmittingQuestion = useInteractionStore.use.isSubmittingQuestion();
   const contactRequestAccepted = useInteractionStore.use.contactRequestAccepted();
   const secretSaved = useInteractionStore.use.secretSaved();
-  const inlineConfirmationToolCallId = useInteractionStore.use.inlineConfirmationToolCallId();
-  const inlineConfirmationAttached = inlineConfirmationToolCallId !== null;
 
   // -------------------------------------------------------------------------
   // Onboarding choice card
@@ -657,6 +655,24 @@ export function ChatRouteContent({
 
   useLayoutEffect(() => { sanitizedMessagesRef.current = sanitizedMessages; });
 
+  // The standalone confirmation card is the fallback home for confirmations
+  // that aren't bound to a tool call (e.g. the `host_file_read` directive
+  // approval). When a tool call carries the same prompt it renders inline on
+  // that chip, so deriving attachment from the message tree avoids a
+  // double-render without relying on a single store slot (which can't
+  // represent two overlapping confirmations).
+  const pendingConfirmationAttachedToToolCall = useMemo(
+    () =>
+      pendingConfirmation != null &&
+      sanitizedMessages.some((m) =>
+        m.toolCalls?.some(
+          (tc) =>
+            tc.pendingConfirmation?.requestId === pendingConfirmation.requestId,
+        ),
+      ),
+    [pendingConfirmation, sanitizedMessages],
+  );
+
   const transcriptItems = useMemo(
     () =>
       buildTranscriptItems({
@@ -664,7 +680,7 @@ export function ChatRouteContent({
         pendingSecret: pendingSecret
           ? { requestId: pendingSecret.requestId }
           : null,
-        pendingConfirmation: pendingConfirmation && !inlineConfirmationAttached
+        pendingConfirmation: pendingConfirmation && !pendingConfirmationAttachedToToolCall
           ? { requestId: pendingConfirmation.requestId }
           : null,
         pendingContactRequest: pendingContactRequest
@@ -687,7 +703,7 @@ export function ChatRouteContent({
       sanitizedMessages,
       pendingSecret,
       pendingConfirmation,
-      inlineConfirmationAttached,
+      pendingConfirmationAttachedToToolCall,
       pendingContactRequest,
       showThinking,
       thinkingLabel,
@@ -1073,14 +1089,8 @@ export function ChatRouteContent({
     },
     onSecretSubmit: () => {},
     onConfirmationDecision: () => {},
-    isSubmittingConfirmation,
     onConfirmationSubmit: handleConfirmationSubmit,
-    onAllowAndCreateRule:
-      pendingConfirmation?.persistentDecisionsAllowed !== false &&
-      (pendingConfirmation?.allowlistOptions?.length ?? 0) > 0
-        ? handleAllowAndCreateRule
-        : undefined,
-    pendingConfirmationToolCallId: inlineConfirmationToolCallId ?? undefined,
+    onAllowAndCreateRule: handleAllowAndCreateRule,
     onRetryError: () => setError(null),
     onForkConversation: (messageId) => {
       void handleForkConversation(messageId);
