@@ -68,7 +68,6 @@ import type {
   SurfaceType,
 } from "./message-protocol.js";
 import { filterMessagesForUntrustedActor } from "./message-provenance.js";
-import { type PkbContextConversation } from "./pkb-context-tracker.js";
 import type { TrustContext } from "./trust-context.js";
 
 // The compaction strip lives in the compaction layer (`context/`) so the agent
@@ -1788,6 +1787,12 @@ export interface RuntimeInjectionResult {
  * Run every registered {@link Injector}'s `produce()` in ascending `order`
  * and return every non-null block the chain produced.
  *
+ * `runMessages` is the turn's working message array, forwarded to each
+ * injector so producers that need the current prompt contents read it from a
+ * parameter rather than the shared {@link TurnContext}. Omitted by text-only
+ * callers ({@link composeInjectorChain}) that drive the chain without a
+ * message array.
+ *
  * Injectors returning `null` are omitted from the result. The returned array
  * preserves ascending-`order` sort so downstream callers (notably
  * {@link applyRuntimeInjections}) can group blocks by `placement` and apply
@@ -1795,12 +1800,13 @@ export interface RuntimeInjectionResult {
  */
 async function collectInjectorBlocks(
   ctx: TurnContext,
+  runMessages?: Message[],
 ): Promise<InjectionBlock[]> {
   const injectors = getInjectors();
   if (injectors.length === 0) return [];
   const out: InjectionBlock[] = [];
   for (const injector of injectors) {
-    const block = await injector.produce(ctx);
+    const block = await injector.produce(ctx, runMessages);
     if (block) out.push(block);
   }
   return out;
@@ -1940,18 +1946,6 @@ export interface RuntimeInjectionOptions {
   pkbContext?: string | null;
   pkbActive?: boolean;
   /**
-   * The live conversation (or a minimal shape containing `messages`) used
-   * to compute which PKB paths are already "in context" and therefore
-   * suppressed from hint suggestions.
-   */
-  pkbConversation?: PkbContextConversation;
-  /**
-   * Working directory against which relative `file_read` tool paths
-   * resolve, used to detect workspace-relative reads like
-   * `pkb/threads.md`. Falls back to the PKB root when omitted.
-   */
-  pkbWorkingDir?: string;
-  /**
    * Pre-rendered v2 static memory content (essentials/threads/recent/buffer
    * concatenated, header-wrapped). When non-null on full-mode turns the
    * `memory-v2-static` injector wraps it in `<info>` and splices it onto
@@ -2054,8 +2048,6 @@ function buildTurnInjectionInputs(
     unifiedTurnContext: options.unifiedTurnContext,
     pkbContext: options.pkbContext,
     pkbActive: options.pkbActive,
-    pkbConversation: options.pkbConversation,
-    pkbWorkingDir: options.pkbWorkingDir,
     memoryV2Static: options.memoryV2Static,
     nowScratchpad: options.nowScratchpad,
     subagentStatusBlock: options.subagentStatusBlock,
@@ -2145,7 +2137,7 @@ export async function applyRuntimeInjections(
     ? { ...options.turnContext, injectionInputs }
     : synthesizeFallbackTurnContext(injectionInputs);
 
-  const chainBlocks = await collectInjectorBlocks(turnCtx);
+  const chainBlocks = await collectInjectorBlocks(turnCtx, runMessages);
 
   // Split the chain output by placement so the downstream assembly can
   // process each slot with the correct ordering rule.

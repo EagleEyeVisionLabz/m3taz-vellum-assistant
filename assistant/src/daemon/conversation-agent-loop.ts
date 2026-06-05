@@ -1320,12 +1320,6 @@ export async function runAgentLoopImpl(
       : null;
     const memoryV2Static = shouldInjectNowAndPkb ? currentMemoryV2Static : null;
 
-    // PKB relevance-hint input. Pass `ctx` directly —
-    // `PkbContextConversation` is structural and `getInContextPkbPaths`
-    // re-reads `conversation.messages` on each call, so post-compaction
-    // re-injects see the updated history.
-    const pkbConversation = pkbActive ? ctx : undefined;
-
     // Subagent status injection — gives the parent LLM visibility into active/completed children.
     // Skipped when this conversation IS a subagent (no nesting) or has no children.
     const subagentStatusBlock = ctx.isSubagent
@@ -1416,8 +1410,6 @@ export async function runAgentLoopImpl(
       unifiedTurnContext: unifiedTurnContextStr,
       pkbContext,
       pkbActive,
-      pkbConversation,
-      pkbWorkingDir: pkbActive ? ctx.workingDir : undefined,
       memoryV2Static,
       nowScratchpad,
       voiceCallControlPrompt: ctx.voiceCallControlPrompt ?? null,

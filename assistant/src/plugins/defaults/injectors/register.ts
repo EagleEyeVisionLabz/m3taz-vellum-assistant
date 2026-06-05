@@ -55,7 +55,9 @@ import { getLiveGraphMemory } from "../../../memory/graph/conversation-graph-mem
 import { getPkbAutoInjectList } from "../../../memory/pkb/autoinject.js";
 import { searchPkbFiles } from "../../../memory/pkb/pkb-search.js";
 import { getPkbRoot, PKB_WORKSPACE_SCOPE } from "../../../memory/pkb/types.js";
+import type { Message } from "../../../providers/types.js";
 import { getLogger } from "../../../util/logger.js";
+import { getSandboxWorkingDir } from "../../../util/platform.js";
 import {
   type InjectionBlock,
   type Injector,
@@ -279,13 +281,16 @@ const pkbContextInjector: Injector = {
 const pkbReminderInjector: Injector = {
   name: "pkb-reminder",
   order: DEFAULT_INJECTOR_ORDER.pkbReminder,
-  async produce(ctx: TurnContext): Promise<InjectionBlock | null> {
+  async produce(
+    ctx: TurnContext,
+    runMessages?: Message[],
+  ): Promise<InjectionBlock | null> {
     const inputs = readInjectionInputs(ctx);
     const mode = inputs.mode ?? "full";
     if (mode !== "full") return null;
     if (!inputs.pkbActive) return null;
     if (isPkbInjectionSilencedByV2()) return null;
-    const reminder = await buildPkbReminderWithHints(ctx, inputs);
+    const reminder = await buildPkbReminderWithHints(ctx, runMessages);
     return {
       id: "pkb-reminder",
       text: reminder,
@@ -308,24 +313,26 @@ function buildPkbContextBlock(content: string): string {
 }
 
 /**
- * Build the PKB `<system_reminder>` text. When a dense query vector plus
- * enough scope metadata is available, run the hybrid PKB search to
+ * Build the PKB `<system_reminder>` text. When a dense query vector and the
+ * turn's working messages are available, run the hybrid PKB search to
  * surface up to three relevance hints; fall back to the flat static
  * reminder on empty results or any error.
  *
  * The dense/sparse query pair is read off the conversation's live graph
  * handle ({@link getLiveGraphMemory}) — the memory-retrieval hook records it
- * there during the turn's retrieval — so the vectors stay owned by the
- * memory-retrieval domain rather than being threaded through the agent loop.
+ * there during the turn's retrieval. In-context PKB paths are computed from
+ * the turn's working messages (`runMessages`, supplied by the injector chain)
+ * resolved against the workspace working directory, so the reminder sources
+ * its inputs itself rather than having them threaded through the agent loop.
  */
 async function buildPkbReminderWithHints(
   ctx: TurnContext,
-  inputs: TurnInjectionInputs,
+  runMessages?: Message[],
 ): Promise<string> {
   let hints: string[] = [];
   const graphMemory = getLiveGraphMemory(ctx.conversationId);
   const queryVector = graphMemory?.pkbQueryVector;
-  if (queryVector && queryVector.length > 0 && inputs.pkbConversation) {
+  if (queryVector && queryVector.length > 0 && runMessages) {
     try {
       const pkbRoot = getPkbRoot();
       const results = await searchPkbFiles(
@@ -334,12 +341,11 @@ async function buildPkbReminderWithHints(
         8,
         [PKB_WORKSPACE_SCOPE],
       );
-      const workingDir = inputs.pkbWorkingDir ?? pkbRoot;
       const inContext = getInContextPkbPaths(
-        inputs.pkbConversation,
+        { messages: runMessages },
         getPkbAutoInjectList(pkbRoot),
         pkbRoot,
-        workingDir,
+        getSandboxWorkingDir(),
       );
       // Gate on `denseScore` (cosine, [0, 1]) so the quality bar is stable
       // regardless of whether sparse was provided. Rank by `hybridScore`
