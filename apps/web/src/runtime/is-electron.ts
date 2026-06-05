@@ -35,7 +35,8 @@ export type VellumCommand =
   | { kind: "openSettings" }
   | { kind: "shareFeedback" }
   | { kind: "find" }
-  | { kind: "logout" };
+  | { kind: "logout" }
+  | { kind: "rePair" };
 
 /**
  * Renderer-side mirror of `AssistantStatus` in

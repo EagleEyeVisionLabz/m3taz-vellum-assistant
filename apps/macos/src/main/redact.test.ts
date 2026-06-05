@@ -36,6 +36,7 @@ describe("redactText", () => {
 
     const result = redactText(input);
     expect(result).not.toContain("sk-proj");
+    // generic-examples:ignore-next-line — reason: testing that redactText masks real-looking emails
     expect(result).not.toContain("admin@vellum.ai");
     expect(result).not.toContain("/Users/dev");
     expect(result).toContain("[REDACTED]");

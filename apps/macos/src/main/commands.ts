@@ -16,7 +16,8 @@ export type VellumCommand =
   | { kind: "openSettings" }
   | { kind: "shareFeedback" }
   | { kind: "find" }
-  | { kind: "logout" };
+  | { kind: "logout" }
+  | { kind: "rePair" };
 
 export type VellumCommandKind = VellumCommand["kind"];
 
@@ -37,6 +38,7 @@ export const DEFAULT_ACCELERATORS: Record<VellumCommandKind, string> = {
   shareFeedback: "",
   find: "CmdOrCtrl+F",
   logout: "",
+  rePair: "",
 };
 
 /**
