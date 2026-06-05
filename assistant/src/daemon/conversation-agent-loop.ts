@@ -1150,7 +1150,6 @@ export async function runAgentLoopImpl(
     // share a fire site until compaction is cleared from the gap between them.
     const isTrustedActor = resolveTrustClass(ctx.trustContext) === "guardian";
     const memoryCtx: MemoryRetrievalHookContext = {
-      messages: ctx.messages,
       graphMemory: ctx.graphMemory,
       config: getConfig(),
       onEvent,
@@ -1163,7 +1162,7 @@ export async function runAgentLoopImpl(
       signal: abortController.signal,
       pkbContent: null,
       nowContent: null,
-      runMessages: ctx.messages,
+      latestMessages: ctx.messages,
     };
     await userPromptSubmitMemoryRetrieval(memoryCtx);
 
@@ -1171,7 +1170,7 @@ export async function runAgentLoopImpl(
     // log, `memory_recalled` event) and the dense/sparse pair selection; the
     // loop only reads back the turn-scoped context it reuses downstream — the
     // injected message list and the PKB query vectors.
-    let runMessages = memoryCtx.runMessages;
+    let runMessages = memoryCtx.latestMessages;
     const pkbQueryVector = memoryCtx.pkbQueryVector;
     const pkbSparseVector = memoryCtx.pkbSparseVector;
 
