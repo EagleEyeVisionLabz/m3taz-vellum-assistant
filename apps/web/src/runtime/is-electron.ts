@@ -279,6 +279,10 @@ declare global {
           callback: (event: ElectronNotificationActionEvent) => void,
         ): () => void;
       };
+      // Optional: older Electron shells predate the popout channel.
+      popout?: {
+        open(conversationId: string): Promise<void>;
+      };
       // Optional: older Electron shells predate the bundleConfirm channel.
       bundleConfirm?: {
         getData(): Promise<BundleScanData | null>;
