@@ -25,7 +25,9 @@ import {
 } from "./deep-links";
 import { installAvatarIpc } from "./avatar";
 import { installDock } from "./dock";
+import { installFeedbackIpc } from "./feedback";
 import { installLocalMode } from "./local-mode";
+import log from "./logger";
 import {
   ensureVisible as ensureMainWindowVisible,
   installMainWindow,
@@ -312,6 +314,7 @@ app
     installSettingsIpc();
     installLocalMode();
     installAbout();
+    installFeedbackIpc();
     installApplicationMenu();
     // Register the avatar channel before the Dock and Tray install so their
     // initial render reflects any avatar the renderer publishes during
@@ -340,7 +343,7 @@ app
     });
   })
   .catch((err: unknown) => {
-    console.error("[app] whenReady setup failed:", err);
+    log.error("[app] whenReady setup failed:", err);
   });
 
 app.on("second-instance", (_event, argv) => {

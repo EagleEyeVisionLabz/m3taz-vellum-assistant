@@ -33,6 +33,7 @@ export type VellumCommand =
   | { kind: "currentConversation" }
   | { kind: "markCurrentUnread" }
   | { kind: "openSettings" }
+  | { kind: "shareFeedback" }
   | { kind: "find" }
   | { kind: "logout" };
 
@@ -142,6 +143,10 @@ declare global {
               | { kind: "unknown"; url: string },
           ) => void,
         ): () => void;
+      };
+      feedback?: {
+        diagnostics(): Promise<Record<string, unknown>>;
+        logs(): Promise<string>;
       };
     };
   }
