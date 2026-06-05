@@ -36,6 +36,7 @@ import {
   toggleVisibility as toggleMainWindowVisibility,
 } from "./main-window";
 import { installApplicationMenu } from "./menu";
+import { installNativeAuth } from "./native-auth";
 import { installConnectivityProbe } from "./connectivity-probe";
 import { installNotifications } from "./notifications";
 import { installPowerEvents } from "./power-events";
@@ -337,6 +338,7 @@ app
       ensureMainWindow: ensureMainWindowVisible,
       openAbout: openAboutWindow,
     });
+    installNativeAuth();
     installMainWindow();
 
     // Dock-icon click / Cmd-Tab re-activation: bring the main window
