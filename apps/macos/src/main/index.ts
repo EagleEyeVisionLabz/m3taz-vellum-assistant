@@ -12,6 +12,7 @@ import {
 
 import { installAbout, openAboutWindow } from "./about";
 import { APP_HOST, APP_PROTOCOL } from "./app-config";
+import { installCsp } from "./csp";
 import { ensureWebInstalled, getWebDistPath } from "./cli-installer";
 import { handle } from "./ipc";
 import { resolveAppProtocolPath } from "./app-protocol";
@@ -297,10 +298,6 @@ const installSettingsIpc = (): void => {
 // App lifecycle
 // ---------------------------------------------------------------------------
 
-// TODO(security): set a Content Security Policy via session.webRequest.
-// onHeadersReceived once the prod connect-src endpoints (api.vellum.ai,
-// websocket origins, telemetry) are settled in the auth + networking tickets.
-
 app
   .whenReady()
   .then(async () => {
@@ -311,6 +308,7 @@ app
       registerAppProtocol();
     }
     installPermissionHandler();
+    installCsp();
     installSettingsIpc();
     installLocalMode();
     installAbout();
