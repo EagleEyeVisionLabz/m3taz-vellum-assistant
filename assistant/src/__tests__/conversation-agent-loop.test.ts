@@ -620,8 +620,16 @@ function makeCtx(
       shouldCompact: () => ({ needed: false, estimatedTokens: 0 }),
       maybeCompact: async () => ({ compacted: false }),
     } as unknown as Conversation["contextWindowManager"],
-    contextCompactedMessageCount: 0,
-    contextCompactedAt: null,
+    conversationType: mockConversationRow?.conversationType ?? undefined,
+    source: mockConversationRow?.source ?? undefined,
+    contextSummary: mockConversationRow?.contextSummary ?? null,
+    contextCompactedMessageCount:
+      mockConversationRow?.contextCompactedMessageCount ?? 0,
+    contextCompactedAt: mockConversationRow?.contextCompactedAt ?? null,
+    slackContextCompactionWatermarkTs:
+      mockConversationRow?.slackContextCompactionWatermarkTs ?? null,
+    lastNotifiedInferenceProfile:
+      mockConversationRow?.lastNotifiedInferenceProfile ?? null,
 
     memoryPolicy: { scopeId: "default", includeDefaultFallback: true },
 
@@ -699,6 +707,28 @@ function makeCtx(
 
     ...ctxOverrides,
   } as unknown as Conversation;
+}
+
+type CompactionResult = Parameters<typeof applyCompactionResult>[1];
+
+function makeCompactionResult(
+  overrides?: Partial<CompactionResult>,
+): CompactionResult {
+  return {
+    messages: [{ role: "user", content: [{ type: "text", text: "summary" }] }],
+    compactedPersistedMessages: 4,
+    previousEstimatedInputTokens: 12000,
+    estimatedInputTokens: 3000,
+    maxInputTokens: 100000,
+    thresholdTokens: 80000,
+    compactedMessages: 4,
+    summaryCalls: 1,
+    summaryInputTokens: 100,
+    summaryOutputTokens: 20,
+    summaryModel: "mock-model",
+    summaryText: "summary",
+    ...overrides,
+  };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -3864,6 +3894,59 @@ describe("session-agent-loop", () => {
       expect(events.some((event) => event.type === "context_compacted")).toBe(
         true,
       );
+    });
+
+    test("applyCompactionResult advances the persisted count from the trusted in-context boundary", async () => {
+      // Trusted views slice past the already-compacted prefix, so a further
+      // compaction advances the persisted count from the mirrored DB boundary.
+
+      // GIVEN a trusted (guardian) conversation that has already compacted 5
+      // persisted messages, so its in-context history starts past that prefix
+      const ctx = makeCtx({
+        contextCompactedMessageCount: 5,
+        trustContext: {
+          trustClass: "guardian",
+        } as Conversation["trustContext"],
+      });
+
+      // WHEN a turn compacts 4 more in-context messages
+      await applyCompactionResult(
+        ctx,
+        makeCompactionResult({ compactedPersistedMessages: 4 }),
+        () => {},
+        "req-1",
+      );
+
+      // THEN the persisted count advances from the prior boundary (5 + 4)
+      expect(ctx.contextCompactedMessageCount).toBe(9);
+    });
+
+    test("applyCompactionResult resets the persisted count to the unsliced boundary for untrusted views", async () => {
+      // Untrusted views render history unsliced (boundary 0), so a compaction
+      // must record only the new summary's prefix instead of adding to the raw
+      // mirror — otherwise future loads slice past unsummarized rows.
+
+      // GIVEN an untrusted view of a conversation whose raw DB count mirrors a
+      // 5-message compacted prefix — but untrusted views render that history
+      // unsliced (boundary 0), so the compactor operates on the full list
+      const ctx = makeCtx({
+        contextCompactedMessageCount: 5,
+        trustContext: {
+          trustClass: "unknown",
+        } as Conversation["trustContext"],
+      });
+
+      // WHEN that turn compacts 4 in-context messages
+      await applyCompactionResult(
+        ctx,
+        makeCompactionResult({ compactedPersistedMessages: 4 }),
+        () => {},
+        "req-1",
+      );
+
+      // THEN the persisted count reflects only the new summary's prefix (0 + 4)
+      // rather than double-counting the raw mirror (which would yield 9)
+      expect(ctx.contextCompactedMessageCount).toBe(4);
     });
   });
 
