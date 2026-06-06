@@ -12,7 +12,7 @@ import {
   MENU_ICON_SETTINGS,
 } from "./assets/menu-icons";
 import { onAvatarChange } from "./avatar";
-import { resolveAccelerator } from "./commands";
+import { acceleratorOption } from "./commands";
 import { getWatchedLockfile } from "./lockfile-watcher";
 import { dispatchToMain } from "./main-window";
 import { menuIcon } from "./menu-icon";
@@ -99,7 +99,7 @@ const assistantDisplayTitle = (assistant: LockfileAssistant): string => {
  * right-click without requiring an app restart.
  */
 const isMultiAssistantEnabled = (): boolean => {
-  const flags = readSetting("featureFlags") as Record<string, boolean> | null;
+  const flags = readSetting("featureFlags");
   return flags?.["multi-platform-assistant"] === true;
 };
 
@@ -197,7 +197,7 @@ const buildTrayMenu = (handlers: TrayHandlers, status: AssistantStatus): Menu =>
     {
       label: "New Conversation",
       icon: menuIcon(MENU_ICON_MESSAGECIRCLEPLUS),
-      accelerator: resolveAccelerator("newConversation"),
+      ...acceleratorOption("newConversation"),
       click: async () => {
         await handlers.ensureMainWindow();
         // Dispatch by reference (not `dispatchToFocused`'s
@@ -211,7 +211,7 @@ const buildTrayMenu = (handlers: TrayHandlers, status: AssistantStatus): Menu =>
     {
       label: "Current Conversation",
       icon: menuIcon(MENU_ICON_MESSAGESQUARE),
-      accelerator: resolveAccelerator("currentConversation"),
+      ...acceleratorOption("currentConversation"),
       click: async () => {
         await handlers.ensureMainWindow();
         dispatchToMain({ kind: "currentConversation" });

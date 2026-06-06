@@ -50,6 +50,35 @@ export type VellumCommand =
   | { kind: "quickInputSubmit"; message: string };
 
 /**
+ * Whether a hotkey is a system-wide global shortcut (active even when the app
+ * is unfocused) or a focused-app menu accelerator. Renderer-side mirror of
+ * `HotkeyScope` in `apps/macos/src/main/hotkeys.ts`.
+ */
+export type HotkeyScope = "global" | "menu";
+
+/**
+ * A rebindable command resolved against the current settings: the compiled
+ * default, the user's override, and the effective accelerator. `override` is
+ * `null` when the default is in use, `""` when the binding is disabled, or a
+ * custom accelerator string. Renderer-side mirror of `ResolvedHotkey` in
+ * `apps/macos/src/main/hotkeys.ts`.
+ */
+export interface ResolvedHotkey {
+  key: string;
+  label: string;
+  scope: HotkeyScope;
+  defaultAccelerator: string;
+  override: string | null;
+  accelerator: string;
+  /**
+   * Whether the user can rebind this command. `false` entries are reserved
+   * accelerators (e.g. Find, Settings) carried only so the recorder can flag
+   * conflicts against them; the page filters them out of the rendered rows.
+   */
+  rebindable: boolean;
+}
+
+/**
  * Renderer-side mirror of `AssistantStatus` in
  * `apps/macos/src/main/status.ts`. Inline for the same reason as
  * `VellumCommand` — main, preload, and renderer each have their own TS
@@ -168,9 +197,17 @@ declare global {
       csrf?: {
         getToken(): string | null;
       };
-      settings: {
-        get<T = unknown>(key: string): Promise<T | null>;
-        set<T = unknown>(key: string, value: T): Promise<void>;
+      // Optional: an older preload predates the hotkeys/featureFlags channels.
+      // The macOS app and web bundle don't release together, so a newer
+      // renderer can run against an older preload; callers must guard on
+      // presence (see `status`/`icon` below for the same pattern).
+      hotkeys?: {
+        get(): Promise<ResolvedHotkey[]>;
+        set(key: string, accelerator: string | null): Promise<void>;
+        onChange(callback: (catalog: ResolvedHotkey[]) => void): () => void;
+      };
+      featureFlags?: {
+        set(flags: Record<string, boolean>): void;
       };
       commands: {
         on(callback: (command: VellumCommand) => void): () => void;
