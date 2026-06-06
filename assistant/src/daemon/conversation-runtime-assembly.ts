@@ -24,6 +24,7 @@ import {
   getMessages as defaultGetMessages,
   type MessageRow,
 } from "../memory/conversation-crud.js";
+import { isBackgroundConversationType } from "../memory/conversation-types.js";
 import {
   countMemoryPrefixBlocks,
   extractMemoryPrefixBlocks,
@@ -1824,25 +1825,32 @@ function applyInjectionBlock(
  *
  * The active workspace surface, the channel capabilities, the active document
  * list, the channel command context, the voice call-control prompt, the
- * transport hints, the turn's interactivity, and the `<active_subagents>`
- * status block are not on this bag: `applyRuntimeInjections` resolves them
- * from the live conversation itself (its surface state, `channelCapabilities`,
- * the document store keyed by `conversationId`, its `commandIntent`, its
- * `voiceCallControlPrompt`, its `transportHints`, its
- * `currentTurnIsNonInteractive` — the last driving the
- * `<non_interactive_context>` branch and the `background-turn` injector — and
- * the subagent manager's children of `conversationId`), so the orchestrator
- * does not compute or thread any of them per turn.
+ * transport hints, the background-conversation flag, and the
+ * `<active_subagents>` status block are not on this bag:
+ * `applyRuntimeInjections` resolves them from the live conversation itself (its
+ * surface state, `channelCapabilities`, the document store keyed by
+ * `conversationId`, its `commandIntent`, its `voiceCallControlPrompt`, its
+ * `transportHints`, its `conversationType`, and the subagent manager's children
+ * of `conversationId` respectively), so the orchestrator does not compute or
+ * thread any of them per turn.
+ *
+ * {@link isNonInteractive} is the exception: it is derived from the agent
+ * loop's `isInteractive` option (not re-derivable from live conversation
+ * state, which can flip mid-turn on SSE reconnect), so the loop resolves it
+ * once at turn start and threads it here. The post-compaction re-injection
+ * hook receives the same value through its context, keeping the hook free of
+ * agent-loop closure state.
  */
 export interface RuntimeInjectionOptions {
   unifiedTurnContext?: string | null;
   /**
-   * True when the active conversation's type is "background" or "scheduled".
-   * Forwarded to {@link TurnInjectionInputs.isBackgroundConversation} so the
-   * `background-turn` injector can wrap the tail user message with the
-   * configured reminder.
+   * True when the in-flight turn has no human present to answer clarification
+   * questions (resolved by the agent loop from its `isInteractive` option,
+   * falling back to the conversation's `hasNoClient` / `headlessLock` state).
+   * Drives the `<non_interactive_context>` branch and gates the `background-turn`
+   * injector.
    */
-  isBackgroundConversation?: boolean;
+  isNonInteractive?: boolean;
   /**
    * Pre-rendered Slack chronological transcript that replaces the
    * default `runMessages` history for any Slack conversation (channels
@@ -1906,7 +1914,7 @@ function buildTurnInjectionInputs(
   options: RuntimeInjectionOptions,
   channelCapabilities: ChannelCapabilities | null,
   activeDocuments: TurnInjectionInputs["activeDocuments"],
-  isNonInteractive: boolean,
+  isBackgroundConversation: boolean,
   subagentStatusBlock: string | null,
 ): TurnInjectionInputs {
   return {
@@ -1916,8 +1924,8 @@ function buildTurnInjectionInputs(
     channelCapabilities,
     slackChronologicalMessages: options.slackChronologicalMessages,
     slackActiveThreadFocusBlock: options.slackActiveThreadFocusBlock,
-    isNonInteractive,
-    isBackgroundConversation: options.isBackgroundConversation,
+    isNonInteractive: options.isNonInteractive,
+    isBackgroundConversation,
     activeDocuments,
   };
 }
@@ -2010,8 +2018,10 @@ export async function applyRuntimeInjections(
   const voiceCallControlPrompt =
     liveConversation?.voiceCallControlPrompt ?? null;
   const transportHints = liveConversation?.transportHints ?? null;
-  const isNonInteractive =
-    liveConversation?.currentTurnIsNonInteractive ?? false;
+  const isBackgroundConversation = isBackgroundConversationType(
+    liveConversation?.conversationType,
+  );
+  const isNonInteractive = options.isNonInteractive ?? false;
 
   // The `<active_subagents>` status block is sourced from the live subagent
   // manager's children of this conversation. Skipped when this conversation is
@@ -2031,7 +2041,7 @@ export async function applyRuntimeInjections(
     options,
     channelCapabilities,
     activeDocuments,
-    isNonInteractive,
+    isBackgroundConversation,
     subagentStatusBlock,
   );
   const turnCtx: TurnContext = options.turnContext

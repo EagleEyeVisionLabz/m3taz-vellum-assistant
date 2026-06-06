@@ -75,7 +75,6 @@ import {
 import { getResolvedConversationDirPath } from "../memory/conversation-directories.js";
 import { syncMessageToDisk } from "../memory/conversation-disk-view.js";
 import { isReplaceableTitle } from "../memory/conversation-title-service.js";
-import { isBackgroundConversationType } from "../memory/conversation-types.js";
 import type { ConversationGraphMemory } from "../memory/graph/conversation-graph-memory.js";
 import {
   backfillMessageIdOnLogs,
@@ -318,16 +317,6 @@ export interface AgentLoopConversationContext {
    * conversation. Per-turn mutable, mirroring {@link currentRequestId}.
    */
   currentCallSite?: LLMCallSite;
-  /**
-   * Whether the in-flight turn has no human present to answer clarification
-   * questions, set at turn start from the resolved interactivity signal
-   * (`options?.isInteractive` override, falling back to `hasNoClient` /
-   * `headlessLock`). Read back from the live conversation by runtime assembly
-   * to drive the `<non_interactive_context>` branch and the `background-turn`
-   * injector, so the orchestrator does not thread it per turn. Per-turn
-   * mutable, mirroring {@link currentCallSite}.
-   */
-  currentTurnIsNonInteractive?: boolean;
 
   readonly agentLoop: AgentLoop;
   readonly provider: Provider;
@@ -749,10 +738,12 @@ export async function runAgentLoopImpl(
 
   const isInteractiveResolved =
     options?.isInteractive ?? (!ctx.hasNoClient && !ctx.headlessLock);
-  // Expose the turn's interactivity to plugin pipeline/injector contexts (read
-  // by buildPluginTurnContext) so runtime assembly can drive the
-  // `<non_interactive_context>` branch and the background-turn injector.
-  ctx.currentTurnIsNonInteractive = !isInteractiveResolved;
+  // Whether the in-flight turn has no human present to answer clarification
+  // questions. Derived from the loop's `isInteractive` option (which can fall
+  // back to mutable client/headless state that flips mid-turn), so it is
+  // resolved once here and threaded into every re-injection — including the
+  // post-compaction hook — rather than re-read per assembly call.
+  const isNonInteractive = !isInteractiveResolved;
   const diskPressureDecision = classifyDiskPressureTurnPolicy(
     getDiskPressureStatus(),
     {
@@ -1291,12 +1282,12 @@ export async function runAgentLoopImpl(
 
     state.reducerCompacted = compactedThisTurn;
 
-    // Shared injection options — reused whenever we need to re-inject after reduction.
+    // Shared orchestrator-content injection options — reused whenever we need
+    // to re-inject after reduction. The non-interactive flag is threaded
+    // separately (alongside the loop's other per-turn state) so this bag holds
+    // only channel/conversation content the orchestrator assembles.
     const injectionOpts = {
       unifiedTurnContext: unifiedTurnContextStr,
-      isBackgroundConversation: isBackgroundConversationType(
-        turnStartConversation?.conversationType,
-      ),
       slackChronologicalMessages,
       slackActiveThreadFocusBlock,
     } as const;
@@ -1311,6 +1302,7 @@ export async function runAgentLoopImpl(
 
     const injection = await applyRuntimeInjections(runMessages, {
       ...injectionOpts,
+      isNonInteractive,
       slackChronologicalMessages: state.reducerCompacted
         ? null
         : injectionOpts.slackChronologicalMessages,
@@ -1480,6 +1472,7 @@ export async function runAgentLoopImpl(
           // present in `reducedMessages`.)
           const injection = await applyRuntimeInjections(reducedMessages, {
             ...injectionOpts,
+            isNonInteractive,
             // Once ANY iteration has compacted `ctx.messages`, the captured
             // `slackChronologicalMessages` snapshot (built from the full
             // persisted transcript) would overwrite the compacted history
@@ -1608,6 +1601,7 @@ export async function runAgentLoopImpl(
         // presence.
         const injection = await postCompactReinject({
           ...injectionOpts,
+          isNonInteractive,
           // Suppress the chronological-transcript snapshot once the reducer
           // has collapsed `ctx.messages`; the captured snapshot reflects the
           // full persisted transcript and would overwrite compaction.
@@ -1985,6 +1979,7 @@ export async function runAgentLoopImpl(
         // present in `ctx.messages`.)
         const injection = await applyRuntimeInjections(ctx.messages, {
           ...injectionOpts,
+          isNonInteractive,
           slackChronologicalMessages: state.reducerCompacted
             ? null
             : injectionOpts.slackChronologicalMessages,
@@ -2075,6 +2070,7 @@ export async function runAgentLoopImpl(
           // present in `ctx.messages`.)
           const injection = await applyRuntimeInjections(ctx.messages, {
             ...injectionOpts,
+            isNonInteractive,
             slackChronologicalMessages: state.reducerCompacted
               ? null
               : injectionOpts.slackChronologicalMessages,

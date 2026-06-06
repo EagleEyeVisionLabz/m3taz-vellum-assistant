@@ -247,13 +247,13 @@ export class Conversation {
   /** @internal */ voiceCallControlPrompt?: string;
   /** @internal */ transportHints?: string[];
   /**
-   * Whether the in-flight turn has no human present to answer clarification
-   * questions, set at turn start from the resolved interactivity signal.
-   * Read back by runtime assembly to drive the `<non_interactive_context>`
-   * branch and the `background-turn` injector.
+   * The conversation's immutable creation type (`interactive`, `background`,
+   * `scheduled`, …) as stored on the DB row. Cached on load (and set directly
+   * for subagent conversations) so the runtime-assembly path can derive the
+   * background-turn flag from live state without a per-injection DB read.
    * @internal
    */
-  currentTurnIsNonInteractive?: boolean;
+  conversationType?: string;
   /** @internal */ assistantId?: string;
   /** @internal */ commandIntent?: {
     type: string;

@@ -124,7 +124,6 @@ function seedActiveSurfaceConversation(
   data: SurfaceData,
   channelCapabilities?: ChannelCapabilities,
   commandIntent?: { type: string; payload?: string; languageCode?: string },
-  currentTurnIsNonInteractive?: boolean,
 ): void {
   setConversation(conversationId, {
     conversationId,
@@ -138,7 +137,6 @@ function seedActiveSurfaceConversation(
     >([[surfaceId, { surfaceType: "dynamic_page", data }]]),
     channelCapabilities: channelCapabilities ?? undefined,
     commandIntent,
-    currentTurnIsNonInteractive,
   } as never);
 }
 
@@ -826,6 +824,8 @@ describe("applyRuntimeInjections — injection mode", () => {
   };
 
   const fullOptions = {
+    // Non-interactive turn so the `<non_interactive_context>` branch fires.
+    isNonInteractive: true,
     unifiedTurnContext:
       "<turn_context>\ncurrent_time: 2026-03-04 (Tuesday) 12:00:00 +00:00 (UTC)\ninterface: telegram\n</turn_context>",
     // Guardian trust so the personal-memory gate admits the actor regardless
@@ -855,8 +855,6 @@ describe("applyRuntimeInjections — injection mode", () => {
       { html: "<div>test</div>" },
       channelCapabilities,
       { type: "start" },
-      // Non-interactive turn so the `<non_interactive_context>` branch fires.
-      true,
     );
   });
   afterEach(() => {
