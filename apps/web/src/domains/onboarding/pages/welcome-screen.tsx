@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 
 import { OnboardingLayout } from "@/domains/onboarding/components/onboarding-layout";
 import { isPlatformLocal } from "@/lib/auth/loopback-auth";
-import { isLocalMode } from "@/lib/local-mode";
+import { hasAssistants, isLocalMode } from "@/lib/local-mode";
 import { isElectron } from "@/runtime/is-electron";
 import { startAuthFlow } from "@/runtime/native-auth";
 import { routes } from "@/utils/routes";
@@ -16,8 +16,11 @@ export function WelcomeScreen() {
   const flowIdRef = useRef(0);
 
   const handleLogin = async () => {
+    const returnTo = hasAssistants()
+      ? routes.onboarding.selectAssistant
+      : routes.onboarding.hosting;
+
     if (isLocalMode() && isPlatformLocal()) {
-      const returnTo = routes.onboarding.hosting;
       void navigate(`${routes.account.login}?returnTo=${encodeURIComponent(returnTo)}`);
       return;
     }
@@ -25,7 +28,6 @@ export function WelcomeScreen() {
     setError(null);
     setLoading(true);
     try {
-      const returnTo = routes.onboarding.hosting;
       const callbackUrl = `${routes.account.providerCallback}?returnTo=${encodeURIComponent(returnTo)}`;
       await startAuthFlow("workos-oidc", callbackUrl, { returnTo });
     } catch {
@@ -46,7 +48,11 @@ export function WelcomeScreen() {
 
   const handleContinueWithoutAccount = () => {
     if (loading) handleCancel();
-    void navigate(routes.onboarding.hosting);
+    if (hasAssistants()) {
+      void navigate(routes.onboarding.selectAssistant);
+    } else {
+      void navigate(routes.onboarding.hosting);
+    }
   };
 
   return (
