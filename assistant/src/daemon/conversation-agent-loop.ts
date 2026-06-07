@@ -44,10 +44,7 @@ import {
   estimatePromptTokensWithTools,
   getCalibrationProviderKey,
 } from "../context/token-estimator.js";
-import type {
-  ContextWindowCompactOptions,
-  ContextWindowManager,
-} from "../context/window-manager.js";
+import type { ContextWindowCompactOptions } from "../context/window-manager.js";
 import { writeRelationshipState } from "../home/relationship-state-writer.js";
 import {
   clearSentryConversationContext,
@@ -363,11 +360,7 @@ export async function runAgentLoopImpl(
     }).contextWindow,
     currentEffectiveContextWindow,
   );
-  const contextWindowManager =
-    ctx.contextWindowManager as ContextWindowManager & {
-      updateConfig?: (config: ContextWindowConfig) => void;
-    };
-  contextWindowManager.updateConfig?.(currentContextWindowConfig);
+  ctx.contextWindowManager.updateConfig(currentContextWindowConfig);
 
   let appliedOverrideProfile = turnOverrideProfile;
   let emittedToolRoutedProfile: string | undefined;
@@ -387,7 +380,7 @@ export async function runAgentLoopImpl(
         }).contextWindow,
         currentEffectiveContextWindow,
       );
-      contextWindowManager.updateConfig?.(currentContextWindowConfig);
+      ctx.contextWindowManager.updateConfig(currentContextWindowConfig);
       appliedOverrideProfile = currentOverrideProfile;
       rlog.info(
         { overrideProfile: currentOverrideProfile ?? null },
