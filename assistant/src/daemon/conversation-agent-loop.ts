@@ -931,6 +931,12 @@ export async function runAgentLoopImpl(
       resolvedInboundActorContext?.trustClass === "guardian" ||
       !resolvedInboundActorContext;
 
+    // Unified `<turn_context>` actor input, included only for non-guardian
+    // turns. Resolved once at turn start and threaded per call site (like
+    // `modelProfile`) so post-compaction re-injection receives it as an
+    // explicit hook input rather than via the `injectionOpts` closure.
+    const actorContext = isGuardian ? null : resolvedInboundActorContext;
+
     // Surface long gaps between user messages so the model can acknowledge
     // the absence naturally. Gated at >12h to avoid noisy injection during
     // normal back-and-forth turns.
@@ -1073,18 +1079,16 @@ export async function runAgentLoopImpl(
     const injectionOpts = {
       slackChronologicalMessages,
       slackActiveThreadFocusBlock,
-      // Unified `<turn_context>` actor input; the `unified-turn-context`
-      // injector builds the block from it. Actor identity is included only for
-      // non-guardian turns. The timestamp, client timezone, and long-absence
-      // gap are sourced from the conversation's frozen
-      // `currentTurnTemporalSnapshot`, the interface and channel labels from the
-      // live conversation's turn interface/channel context, and the configured
-      // and detected timezones from config — all self-resolved in
-      // `applyRuntimeInjections`. `modelProfile` is resolved once at turn start
-      // and threaded per call site (like `isNonInteractive`) so post-compaction
-      // re-injection receives it as an explicit hook input rather than via this
+      // The unified `<turn_context>` block is built by the `unified-turn-context`
+      // injector. The timestamp, client timezone, and long-absence gap are
+      // sourced from the conversation's frozen `currentTurnTemporalSnapshot`,
+      // the interface and channel labels from the live conversation's turn
+      // interface/channel context, and the configured and detected timezones
+      // from config — all self-resolved in `applyRuntimeInjections`.
+      // `modelProfile` and `actorContext` are resolved once at turn start and
+      // threaded per call site (like `isNonInteractive`) so post-compaction
+      // re-injection receives them as explicit hook inputs rather than via this
       // closure.
-      actorContext: isGuardian ? null : resolvedInboundActorContext,
     } as const;
 
     let currentInjectionMode: InjectionMode = "full";
@@ -1099,6 +1103,7 @@ export async function runAgentLoopImpl(
       ...injectionOpts,
       isNonInteractive,
       modelProfile: modelProfileStr,
+      actorContext,
       slackChronologicalMessages: state.reducerCompacted
         ? null
         : injectionOpts.slackChronologicalMessages,
@@ -1270,6 +1275,7 @@ export async function runAgentLoopImpl(
             ...injectionOpts,
             isNonInteractive,
             modelProfile: modelProfileStr,
+            actorContext,
             // Once ANY iteration has compacted `ctx.messages`, the captured
             // `slackChronologicalMessages` snapshot (built from the full
             // persisted transcript) would overwrite the compacted history
@@ -1396,6 +1402,7 @@ export async function runAgentLoopImpl(
         isNonInteractive,
         mode,
         modelProfile,
+        actorContext,
       }) => {
         // stripInjectionsForCompaction() unconditionally removed the existing
         // memory-static block, so re-inject the current content regardless of
@@ -1406,6 +1413,7 @@ export async function runAgentLoopImpl(
           ...injectionOpts,
           isNonInteractive,
           modelProfile,
+          actorContext,
           // Suppress the chronological-transcript snapshot once the reducer
           // has collapsed `ctx.messages`; the captured snapshot reflects the
           // full persisted transcript and would overwrite compaction.
@@ -1445,6 +1453,7 @@ export async function runAgentLoopImpl(
           compaction,
           isNonInteractive,
           modelProfile: modelProfileStr,
+          actorContext,
         });
       lastRunAppendedNewMessages = appendedNewMessages;
       lastRunNewMessages = newMessages;
@@ -1786,6 +1795,7 @@ export async function runAgentLoopImpl(
           ...injectionOpts,
           isNonInteractive,
           modelProfile: modelProfileStr,
+          actorContext,
           slackChronologicalMessages: state.reducerCompacted
             ? null
             : injectionOpts.slackChronologicalMessages,
@@ -1878,6 +1888,7 @@ export async function runAgentLoopImpl(
             ...injectionOpts,
             isNonInteractive,
             modelProfile: modelProfileStr,
+            actorContext,
             slackChronologicalMessages: state.reducerCompacted
               ? null
               : injectionOpts.slackChronologicalMessages,
