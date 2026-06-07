@@ -105,43 +105,73 @@ export function reconcileMessagesWithSeq(
     }
   }
 
-  const reconciled: DisplayMessage[] = server
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .flatMap((m) => {
-      const localMsg = findDisplayMessageByRuntimeIdentity(localById, m);
+  const reconciled: DisplayMessage[] = server.flatMap((m) => {
+    const localMsg = findDisplayMessageByRuntimeIdentity(localById, m);
 
-      const serverTs = timestampToMs(m.timestamp) ?? null;
-      if (
-        !localMsg &&
-        oldestLocalTs != null &&
-        serverTs != null &&
-        serverTs < oldestLocalTs
-      ) {
-        return [];
-      }
+    const serverTs = timestampToMs(m.timestamp) ?? null;
+    if (
+      !localMsg &&
+      oldestLocalTs != null &&
+      serverTs != null &&
+      serverTs < oldestLocalTs
+    ) {
+      return [];
+    }
 
-      if (streamAhead && localMsg) {
-        // Stale snapshot, live local row: keep the streamed row and adopt
-        // only the server-assigned identity so dedupe and the optimistic
-        // echo-swap still resolve the row to its canonical id.
-        return [adoptServerIdentity(localMsg, m)];
-      }
+    if (streamAhead && localMsg) {
+      // Stale snapshot, live local row: keep the streamed row and adopt
+      // only the server-assigned identity so dedupe and the optimistic
+      // echo-swap still resolve the row to its canonical id.
+      return [adoptServerIdentity(localMsg, m)];
+    }
 
-      // Authoritative snapshot, or a server row with no live local copy: take
-      // the server row wholesale, carrying only the client-only blob
-      // attachments the snapshot cannot represent.
-      return [preserveClientAttachments(m, localMsg)];
-    });
+    // Authoritative snapshot, or a server row with no live local copy: take
+    // the server row wholesale, carrying only the client-only blob
+    // attachments the snapshot cannot represent.
+    return [preserveClientAttachments(m, localMsg)];
+  });
 
   preserveUnreflectedLocalRows(reconciled, local, serverIds);
 
   sortByTimestamp(reconciled);
 
   const deduped = dedupeDisplayMessages(reconciled);
-  if (messagesEqual(local, deduped)) {
-    return local;
+
+  // Stability mirrors the merge's own branch decision above. A stale snapshot
+  // (`streamAhead`, `S < F`) kept the live local rows and adopted only their
+  // server identity, so the merge cannot have changed any row's content — the
+  // only differences are structural (rows added, dropped, folded, or
+  // re-identified), which the row-id sequence captures with an O(n) walk
+  // instead of a deep content compare. This is the streaming hot path, where
+  // debounced snapshots routinely lag the stream.
+  if (streamAhead) {
+    return sameIdentitySequence(local, deduped) ? local : deduped;
   }
-  return deduped;
+
+  // Authoritative snapshot (`S >= F`) or a daemon predating seq reporting: the
+  // merge took the server rows wholesale, so their content can differ from the
+  // local rows even when the row ids line up (e.g. a server-normalized row
+  // re-persisted at the same watermark). Compare content so an authoritative
+  // correction is never dropped and the poll loop still settles when nothing
+  // changed.
+  return messagesEqual(local, deduped) ? local : deduped;
+}
+
+/**
+ * Whether two transcripts carry the same rows in the same order, compared by
+ * the server-assigned row id. The seq-path structural-stability signal: on a
+ * stale snapshot (`S < F`) the merge keeps local content, so an identical id
+ * sequence means the merge was a no-op and the original reference can be
+ * returned for caller-side reference-equality stability.
+ */
+function sameIdentitySequence(
+  a: DisplayMessage[],
+  b: DisplayMessage[],
+): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  return a.every((row, i) => row.id === b[i]?.id);
 }
 
 /**
