@@ -12,13 +12,17 @@ import { postDictation } from "@/domains/chat/voice/dictation-api";
 import { shouldEnablePushToTalk } from "@/domains/chat/voice/push-to-talk-host";
 import { usePushToTalk } from "@/domains/chat/voice/use-push-to-talk";
 import { useVoiceRecordingStore } from "@/domains/chat/voice/voice-recording-store";
+import {
+  insertTextIntoFrontApp,
+  openTextInsertionSettings,
+} from "@/runtime/text-insertion";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface UseVoiceInputOptions {
-  /** Current assistant ID — required for dictation cleanup via the daemon. */
+  /** Current assistant ID — required for dictation cleanup via the assistant. */
   assistantId: string | null;
   /** Ref to the composer textarea for cursor-position reads and resize. */
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -37,6 +41,8 @@ export interface UseVoiceInputReturn {
   clearVoiceError: () => void;
   /** Set a specific voice error code (or null to clear). */
   setVoiceError: (code: string | null) => void;
+  /** Open macOS Automation settings for external-app dictation paste. */
+  handleOpenTextInsertionSettings: () => Promise<void>;
   /** Whether the mic-permission primer dialog is open. */
   showPrimer: boolean;
   /**
@@ -47,9 +53,9 @@ export interface UseVoiceInputReturn {
   handleVoiceBeforeStart: () => boolean | Promise<boolean>;
   /**
    * Called when `VoiceInputButton` delivers a final transcript.
-   * Runs dictation cleanup via the daemon, then splices the cleaned
-   * text into the composer at the cursor position captured at recording
-   * start.
+   * Runs dictation cleanup via the assistant, then inserts into the
+   * focused front app when Vellum is backgrounded, or the composer when
+   * Vellum is focused.
    */
   handleVoiceTranscript: (rawText: string) => Promise<void>;
 
@@ -74,7 +80,7 @@ export interface UseVoiceInputReturn {
  * - Voice interim/error state
  * - Mic-permission primer dialog
  * - Push-to-talk keyboard shortcut integration
- * - Dictation transcript processing (daemon cleanup + cursor-aware splicing)
+ * - Dictation transcript processing for composer or front-app insertion
  * - Recording lifecycle callbacks
  *
  * Framework-agnostic: no Next.js imports. Pure React hooks + browser APIs.
@@ -106,6 +112,11 @@ export function useVoiceInput({
     setVoiceError(null);
   }, []);
 
+  const handleOpenTextInsertionSettings = useCallback(
+    () => openTextInsertionSettings(),
+    [],
+  );
+
   const handleVoiceBeforeStart = useCallback((): boolean | Promise<boolean> => {
     // On Capacitor iOS the OS mic alert (backed by NSMicrophoneUsageDescription)
     // must fire directly — any pre-prompt UI with a dismiss affordance violates
@@ -129,7 +140,6 @@ export function useVoiceInput({
       const capturedPos = voiceCursorPosRef.current;
       voiceCursorPosRef.current = null;
 
-      // --- Daemon cleanup (macOS parity: transforming phase) ----
       let insertText = rawText;
       const dictationResult = assistantId
         ? await postDictation(rawText, assistantId, {
@@ -138,6 +148,16 @@ export function useVoiceInput({
         : null;
       if (dictationResult?.mode === "dictation" && dictationResult.text) {
         insertText = dictationResult.text;
+      }
+
+      const frontAppInsertion = await insertTextIntoFrontApp(insertText);
+      if (frontAppInsertion.status === "inserted") {
+        return;
+      }
+      if (frontAppInsertion.status === "automation-denied") {
+        setVoiceError("dictation-automation-denied");
+      } else if (frontAppInsertion.status === "blocked") {
+        setVoiceError("dictation-paste-blocked");
       }
 
       setInput((current: string) => {
@@ -222,6 +242,7 @@ export function useVoiceInput({
     voiceError,
     clearVoiceError,
     setVoiceError,
+    handleOpenTextInsertionSettings,
     showPrimer,
     handleVoiceBeforeStart,
     handleVoiceTranscript,

@@ -20,6 +20,8 @@ mock.module("electron", () => ({
     setAppUserModelId: () => undefined,
     setActivationPolicy: () => undefined,
     getPath: () => "/tmp",
+    hide: () => undefined,
+    isReady: () => false,
     quit: () => undefined,
     dock: undefined,
   },
@@ -76,6 +78,8 @@ mock.module("electron", () => ({
     defaultSession: {
       webRequest: { onHeadersReceived: () => undefined },
       setPermissionRequestHandler: () => undefined,
+      getPreloads: () => [],
+      setPreloads: () => undefined,
     },
   },
   net: {
@@ -101,5 +105,18 @@ mock.module("electron", () => ({
   },
   shell: {
     openExternal: () => Promise.resolve(),
+  },
+  clipboard: {
+    availableFormats: () => [],
+    clear: () => undefined,
+    readBookmark: () => ({ title: "", url: "" }),
+    readBuffer: () => Buffer.alloc(0),
+    readHTML: () => "",
+    readImage: () => ({ isEmpty: () => true }),
+    readRTF: () => "",
+    readText: () => "",
+    write: () => undefined,
+    writeBuffer: () => undefined,
+    writeText: () => undefined,
   },
 }));
