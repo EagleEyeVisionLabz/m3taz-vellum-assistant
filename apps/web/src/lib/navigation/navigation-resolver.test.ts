@@ -348,6 +348,53 @@ describe("resolveNavigation", () => {
   });
 
   // -----------------------------------------------------------------------
+  // post-retire
+  // -----------------------------------------------------------------------
+  describe("post-retire", () => {
+    const postRetire = (state: NavigationState) =>
+      resolveNavigation(state, { kind: "post-retire" });
+
+    test("redirects to select-assistant in local mode when other assistants remain", () => {
+      expect(postRetire(s({ hasAssistants: true, isLocalMode: true }))).toEqual({
+        action: "redirect",
+        to: "/assistant/onboarding/select-assistant",
+      });
+    });
+
+    test("redirects to /assistant in platform mode when other assistants remain", () => {
+      expect(postRetire(s({ hasAssistants: true, isLocalMode: false }))).toEqual({
+        action: "redirect",
+        to: "/assistant",
+      });
+    });
+
+    test("redirects to privacy in platform mode when no assistants remain", () => {
+      expect(postRetire(s({ hasAssistants: false, isLocalMode: false }))).toEqual({
+        action: "redirect",
+        to: "/assistant/onboarding/privacy",
+      });
+    });
+
+    test("redirects to hosting in local mode when platform session present", () => {
+      expect(
+        postRetire(s({ hasAssistants: false, isLocalMode: true, platformSession: "present" })),
+      ).toEqual({
+        action: "redirect",
+        to: "/assistant/onboarding/hosting",
+      });
+    });
+
+    test("redirects to welcome in local mode when no platform session", () => {
+      expect(
+        postRetire(s({ hasAssistants: false, isLocalMode: true, platformSession: "absent" })),
+      ).toEqual({
+        action: "redirect",
+        to: "/assistant/onboarding/welcome",
+      });
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // post-auth
   // -----------------------------------------------------------------------
   describe("post-auth", () => {

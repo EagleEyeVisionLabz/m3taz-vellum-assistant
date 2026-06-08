@@ -11,8 +11,8 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 // --- mutable mock state (set per test) --- //
 
 let isLocalModeValue = false;
-let isNativeValue = false;
 let lockfileAssistants: Array<{ assistantId: string; cloud?: string }> = [];
+let storeAssistants: Array<{ id: string }> = [];
 let retireByIdResult: { ok: true } | { ok: false; status: number; error: Record<string, unknown> } = { ok: true };
 let retireLocalResult: { ok: true } | { ok: false; error?: string } = { ok: true };
 
@@ -36,15 +36,33 @@ mock.module("@/lib/local-mode", () => ({
 }));
 
 mock.module("@/lib/navigation/navigation-resolver", () => ({
-  // "allow" → assistant route still reachable → service falls back to privacy.
-  resolveNavigation: () => ({ action: "allow" }),
+  resolveNavigation: (
+    state: Record<string, unknown>,
+    query: { kind: string },
+  ) => {
+    if (query.kind !== "post-retire") return { action: "allow" };
+    if (state.hasAssistants) return { action: "redirect", to: state.isLocalMode ? "/assistant/onboarding/select-assistant" : "/assistant" };
+    if (!state.isLocalMode) return { action: "redirect", to: "/assistant/onboarding/privacy" };
+    if (state.platformSession === "present") return { action: "redirect", to: "/assistant/onboarding/hosting" };
+    return { action: "redirect", to: "/assistant/onboarding/welcome" };
+  },
 }));
 mock.module("@/lib/navigation/build-state", () => ({
-  buildNavigationState: () => ({}),
+  buildNavigationState: () => ({
+    isLocalMode: isLocalModeValue,
+    isAuthenticated: false,
+    platformSession: "absent",
+    hasAssistants: storeAssistants.length > 0,
+  }),
 }));
 
-mock.module("@/runtime/native-auth", () => ({
-  isNativePlatform: () => isNativeValue,
+const removeMock = mock((assistantId: string) => {
+  storeAssistants = storeAssistants.filter((a) => a.id !== assistantId);
+});
+mock.module("@/stores/resolved-assistants-store", () => ({
+  useResolvedAssistantsStore: {
+    getState: () => ({ remove: removeMock }),
+  },
 }));
 
 const clearOnboardingFlagsMock = mock(() => {});
@@ -56,6 +74,9 @@ mock.module("@/utils/routes", () => ({
   routes: {
     assistant: "/assistant",
     onboarding: {
+      welcome: "/assistant/onboarding/welcome",
+      selectAssistant: "/assistant/onboarding/select-assistant",
+      hosting: "/assistant/onboarding/hosting",
       prechat: "/assistant/onboarding/prechat",
       privacy: "/assistant/onboarding/privacy",
     },
@@ -66,8 +87,8 @@ const { retireAssistant } = await import("./retire-service");
 
 beforeEach(() => {
   isLocalModeValue = false;
-  isNativeValue = false;
   lockfileAssistants = [];
+  storeAssistants = [];
   retireByIdResult = { ok: true };
   retireLocalResult = { ok: true };
   retireAssistantByIdMock.mockClear();
@@ -75,6 +96,7 @@ beforeEach(() => {
   retireLocalAssistantMock.mockClear();
   syncPlatformAssistantsToLockfileMock.mockClear();
   clearOnboardingFlagsMock.mockClear();
+  removeMock.mockClear();
 });
 
 afterEach(() => {
@@ -85,6 +107,7 @@ describe("retireAssistant", () => {
   test("platform assistant routes through the platform delete by id", async () => {
     // GIVEN a platform-hosted target in web mode
     lockfileAssistants = [{ assistantId: "p1", cloud: "vellum" }];
+    storeAssistants = [{ id: "p1" }];
 
     // WHEN retiring it
     const outcome = await retireAssistant("p1");
@@ -103,6 +126,7 @@ describe("retireAssistant", () => {
     // GIVEN a local target in local mode
     isLocalModeValue = true;
     lockfileAssistants = [{ assistantId: "l1", cloud: "local" }];
+    storeAssistants = [{ id: "l1" }];
 
     // WHEN retiring it
     const outcome = await retireAssistant("l1");
@@ -117,6 +141,7 @@ describe("retireAssistant", () => {
     // GIVEN local mode but the *target* is a platform assistant
     isLocalModeValue = true;
     lockfileAssistants = [{ assistantId: "p1", cloud: "vellum" }];
+    storeAssistants = [{ id: "p1" }];
 
     // WHEN retiring the platform target
     const outcome = await retireAssistant("p1");
@@ -130,6 +155,7 @@ describe("retireAssistant", () => {
 
   test("a 404 from the platform delete is treated as success", async () => {
     lockfileAssistants = [{ assistantId: "p1", cloud: "vellum" }];
+    storeAssistants = [{ id: "p1" }];
     retireByIdResult = { ok: false, status: 404, error: {} };
 
     const outcome = await retireAssistant("p1");
@@ -140,6 +166,7 @@ describe("retireAssistant", () => {
 
   test("a non-404 platform failure surfaces the error detail", async () => {
     lockfileAssistants = [{ assistantId: "p1", cloud: "vellum" }];
+    storeAssistants = [{ id: "p1" }];
     retireByIdResult = { ok: false, status: 500, error: { detail: "boom" } };
 
     const outcome = await retireAssistant("p1");
@@ -151,15 +178,32 @@ describe("retireAssistant", () => {
     expect(clearOnboardingFlagsMock).not.toHaveBeenCalled();
   });
 
-  test("native post-retire route is the pre-chat onboarding entry", async () => {
-    isNativeValue = true;
-    lockfileAssistants = [{ assistantId: "p1", cloud: "vellum" }];
+  test("post-retire redirects to select-assistant when other assistants remain", async () => {
+    isLocalModeValue = true;
+    lockfileAssistants = [
+      { assistantId: "l1", cloud: "local" },
+      { assistantId: "p1", cloud: "vellum" },
+    ];
+    storeAssistants = [{ id: "l1" }, { id: "p1" }];
 
-    const outcome = await retireAssistant("p1");
+    const outcome = await retireAssistant("l1");
 
     expect(outcome.ok).toBe(true);
     if (outcome.ok) {
-      expect(outcome.nextRoute).toBe("/assistant/onboarding/prechat");
+      expect(outcome.nextRoute).toBe("/assistant/onboarding/select-assistant");
+    }
+  });
+
+  test("post-retire redirects to welcome when no assistants and not logged in", async () => {
+    isLocalModeValue = true;
+    lockfileAssistants = [{ assistantId: "l1", cloud: "local" }];
+    storeAssistants = [{ id: "l1" }];
+
+    const outcome = await retireAssistant("l1");
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.nextRoute).toBe("/assistant/onboarding/welcome");
     }
   });
 });

@@ -8,7 +8,7 @@ import {
 } from "@/lib/local-mode";
 import { resolveNavigation } from "@/lib/navigation/navigation-resolver";
 import { buildNavigationState } from "@/lib/navigation/build-state";
-import { isNativePlatform } from "@/runtime/native-auth";
+import { useResolvedAssistantsStore } from "@/stores/resolved-assistants-store";
 import { clearOnboardingFlags } from "@/utils/onboarding-cleanup";
 import { routes } from "@/utils/routes";
 
@@ -22,20 +22,17 @@ export type RetireOutcome =
   | { ok: false; error: string };
 
 /**
- * Resolve where to send the user after a retire. Native always returns to the
- * pre-chat onboarding entry; web asks the navigation resolver whether the
- * assistant route is still reachable (it won't be when the active assistant was
- * retired) and falls back to the privacy step.
+ * Resolve where to send the user after a retire. Reads `hasAssistants`
+ * from the resolved assistants store (already updated via `remove()`
+ * before this runs) and delegates to the navigation resolver.
  */
-async function getPostRetireRoute(): Promise<string> {
-  if (isNativePlatform()) return routes.onboarding.prechat;
+function getPostRetireRoute(): string {
   const decision = resolveNavigation(buildNavigationState(), {
-    kind: "route-guard",
-    pathname: routes.assistant,
+    kind: "post-retire",
   });
   return decision.action === "redirect"
     ? decision.to
-    : routes.onboarding.privacy;
+    : routes.onboarding.welcome;
 }
 
 /**
@@ -92,8 +89,9 @@ export async function retireAssistant(
       }
     }
 
+    useResolvedAssistantsStore.getState().remove(assistantId);
     clearOnboardingFlags();
-    return { ok: true, nextRoute: await getPostRetireRoute() };
+    return { ok: true, nextRoute: getPostRetireRoute() };
   } catch {
     return { ok: false, error: "Failed to retire assistant." };
   }
