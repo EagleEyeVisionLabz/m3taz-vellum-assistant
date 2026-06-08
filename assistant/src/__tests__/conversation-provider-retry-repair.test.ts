@@ -571,7 +571,7 @@ describe("provider ordering error retry", () => {
     });
 
     expect(agentLoopRunCount).toBe(2);
-    expect(maybeCompactCalls).toEqual([{ force: false }, { force: true }]);
+    expect(maybeCompactCalls).toEqual([{ force: true }]);
     expect(events.some((e) => e.type === "message_complete")).toBe(true);
     expect(events.some((e) => e.type === "conversation_error")).toBe(false);
   });
@@ -596,9 +596,10 @@ describe("provider ordering error retry", () => {
     // (forceCompactionEnabled=false), the second run also fails with
     // context_too_large. The overflow policy (fail_gracefully) surfaces error.
     expect(agentLoopRunCount).toBe(2);
-    // Two maybeCompact calls: initial auto-compact (force:false),
-    // reducer's compactFn (force:true).
-    expect(maybeCompactCalls).toEqual([{ force: false }, { force: true }]);
+    // One maybeCompact call: the reducer's compactFn (force:true). The
+    // orchestrator's start-of-turn auto-compact no longer runs — the loop's
+    // pre-call budget gate owns turn-start compaction and doesn't trip here.
+    expect(maybeCompactCalls).toEqual([{ force: true }]);
 
     expect(events.some((e) => e.type === "conversation_error")).toBe(true);
   });
@@ -619,7 +620,7 @@ describe("provider ordering error retry", () => {
 
     // Same as above — convergence loop re-runs agent loop, which also fails.
     expect(agentLoopRunCount).toBe(2);
-    expect(maybeCompactCalls).toEqual([{ force: false }, { force: true }]);
+    expect(maybeCompactCalls).toEqual([{ force: true }]);
     expect(events.some((e) => e.type === "conversation_error")).toBe(true);
   });
 
@@ -638,7 +639,7 @@ describe("provider ordering error retry", () => {
     });
 
     expect(agentLoopRunCount).toBe(2);
-    expect(maybeCompactCalls).toEqual([{ force: false }, { force: true }]);
+    expect(maybeCompactCalls).toEqual([{ force: true }]);
     expect(events.some((e) => e.type === "message_complete")).toBe(true);
     expect(events.some((e) => e.type === "conversation_error")).toBe(false);
   });
@@ -661,7 +662,7 @@ describe("provider ordering error retry", () => {
     // the regex patterns, but classifyConversationError recognizes statusCode 413
     // as CONTEXT_TOO_LARGE and sets contextTooLargeDetected = true.
     expect(agentLoopRunCount).toBe(2);
-    expect(maybeCompactCalls).toEqual([{ force: false }, { force: true }]);
+    expect(maybeCompactCalls).toEqual([{ force: true }]);
     expect(events.some((e) => e.type === "message_complete")).toBe(true);
     expect(events.some((e) => e.type === "conversation_error")).toBe(false);
   });

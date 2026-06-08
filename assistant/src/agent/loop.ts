@@ -498,12 +498,21 @@ export interface AgentLoopRunOptions {
     overflowRecovery: { enabled: boolean; safetyMarginRatio: number };
   };
   /**
-   * When `true` and the mid-loop budget gate trips, the loop compacts the
-   * running history in place — re-applying runtime injections via the default
-   * post-compaction hook ({@link postCompact}) — and continues instead
-   * of yielding `exitReason = "budget"`. Reruns without an inline compaction
-   * path (agent wakes, convergence/auto-compress reruns) leave it `false` and
-   * keep yielding for budget. Defaults to `false` when omitted.
+   * When `true`, the loop owns turn-start and mid-loop compaction. The pre-call
+   * budget gate runs before the very first provider call — subsuming the
+   * proactive turn-start compaction the orchestrator would otherwise perform
+   * inline before `run()` — as well as before each tool-use re-entry. When the
+   * gate trips it compacts the running history in place, re-applying runtime
+   * injections via the default post-compaction hook ({@link postCompact}), and
+   * continues instead of yielding `exitReason = "budget"`.
+   *
+   * The first-call pass honors the compaction circuit breaker and proceeds with
+   * the call whether or not it compacted (preflight-overflow recovery and the
+   * convergence loop remain the escalation path), so it never yields on the
+   * first call. Reruns without an inline compaction path (agent wakes,
+   * convergence/auto-compress reruns) leave it `false`: they skip the
+   * first-call gate and keep yielding for budget on mid-loop re-entries.
+   * Defaults to `false` when omitted.
    */
   compactInPlace?: boolean;
   /**
@@ -824,10 +833,16 @@ export class AgentLoop {
     let appendedNewMessages = false;
     // Armed at the end of a tool-use iteration so the budget gate runs at the
     // top of the NEXT iteration — before that iteration's provider call —
-    // instead of after the current one. The first call and stop-hook re-query
-    // continues re-enter without arming, so the gate fires on exactly the same
-    // occasions as the prior post-call placement.
-    let budgetGateArmed = false;
+    // instead of after the current one. Stop-hook re-query continues re-enter
+    // without arming, so the gate fires on exactly the same occasions as the
+    // prior post-call placement, plus the first call when
+    // `compactInPlace` is set (the primary run's turn-start compaction).
+    let budgetGateArmed = compactInPlace;
+    // Distinguishes the first-call gate from mid-loop re-entries within the
+    // shared gate body: the first-call pass compacts-or-proceeds (never yields)
+    // and honors the compaction circuit breaker, matching the orchestrator's
+    // turn-start compaction. Consumed once on the first iteration.
+    let firstCallGate = compactInPlace;
     const rlog = requestId ? log.child({ requestId }) : log;
 
     // Resolve the inference-profile override that applies right now. The
@@ -877,10 +892,18 @@ export class AgentLoop {
         // hard context-too-large rejection. Keyed off the loop's own
         // `history.length` (the messages actually in context this turn,
         // including tool iterations) rather than the durable conversation
-        // count. Gated on `budgetGateArmed` so it skips the first call and
-        // stop-hook re-query continues.
+        // count.
+        //
+        // Armed after each tool-use iteration; stop-hook re-query continues
+        // skip it. The first call runs it only when `compactInPlace` is set,
+        // where it stands in for the orchestrator's turn-start compaction: it
+        // honors the compaction circuit breaker and proceeds with the call
+        // rather than yielding, since there is no prior turn output to
+        // escalate.
         if (budgetGateArmed) {
           budgetGateArmed = false;
+          const isFirstCallGate = firstCallGate;
+          firstCallGate = false;
           const contextWindow = resolveContextWindow?.();
           if (contextWindow?.overflowRecovery.enabled) {
             const { maxInputTokens, overflowRecovery } = contextWindow;
@@ -899,10 +922,16 @@ export class AgentLoop {
             const estimated = this.estimateTokens(history);
             if (estimated > midLoopThreshold) {
               let compactedInPlace = false;
-              if (compactInPlace) {
+              // The turn-start pass skips compaction while the circuit breaker
+              // is open so a run of failed summaries doesn't keep hammering the
+              // summary LLM; mid-loop compaction is force-driven and proceeds
+              // regardless (it has already committed to compacting in place).
+              const compactionAllowed =
+                !isFirstCallGate || !(await this.compactionCircuit.isOpen());
+              if (compactInPlace && compactionAllowed) {
                 rlog.info(
                   {
-                    phase: "mid-loop",
+                    turn: toolUseTurns,
                     estimated,
                     threshold: midLoopThreshold,
                   },
@@ -929,10 +958,14 @@ export class AgentLoop {
                   compactedInPlace = true;
                 }
               }
-              if (!compactedInPlace) {
+              // The turn-start gate proceeds with the call whether or not it
+              // compacted (preflight-overflow recovery and the convergence loop
+              // remain the escalation path); only mid-loop re-entries yield to
+              // the orchestrator before the call.
+              if (!compactedInPlace && !isFirstCallGate) {
                 rlog.warn(
                   {
-                    phase: "mid-loop",
+                    turn: toolUseTurns,
                     estimated,
                     threshold: midLoopThreshold,
                   },
