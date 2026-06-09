@@ -13,6 +13,7 @@ import {
   isRetryableNetworkError,
   sleep,
 } from "../util/retry.js";
+import { resolveLogitBiasPreset } from "./inference/logit-bias.js";
 import {
   isThinkingConfigDisabled,
   normalizeThinkingConfigForWire,
@@ -276,6 +277,27 @@ function normalizeSendMessageOptions(
       resolved.openrouter.only.length > 0
     ) {
       nextConfig.openrouter = { only: resolved.openrouter.only };
+    }
+    // Forward a profile's opted-in `logit_bias` preset only on the Fireworks
+    // (OpenAI-compatible) path. `resolved.logitBias` is set by the resolver from
+    // the single winning profile (not the deep-merge), so it can't leak from a
+    // lower-precedence profile into one that didn't opt in.
+    // `resolveLogitBiasPreset` additionally gates on the resolved model's
+    // tokenizer. Strict-schema clients (Anthropic) reject unknown body fields,
+    // hence the provider gate.
+    if (
+      providerName === "fireworks" &&
+      nextConfig.logit_bias === undefined &&
+      resolved.logitBias !== undefined &&
+      typeof nextConfig.model === "string"
+    ) {
+      const biasMap = resolveLogitBiasPreset(
+        resolved.logitBias,
+        nextConfig.model,
+      );
+      if (biasMap !== undefined) {
+        nextConfig.logit_bias = biasMap;
+      }
     }
     // `contextWindow` and `provider` are server-side concerns, not provider
     // request parameters: effective context is resolved per call site/profile
