@@ -1,4 +1,3 @@
-export type LeafPath = string; // dot- or slash-pathed taxonomy node
 export type Slug = string;
 
 /**
@@ -11,27 +10,34 @@ export type Slug = string;
  */
 export const MEMORY_V3_BLOCK_ID = "memory-v3" as const;
 
-export interface LeafFrontmatter {
-  path: LeafPath;
-  in_core: boolean;
-  /**
-   * Optional stable identifier for the leaf, independent of its taxonomy path.
-   * Older leaves predate this field and omit it, so it is optional.
-   */
-  id?: string;
+/**
+ * A single section of a page: the lead (text before the first `## heading`,
+ * ordinal 0) or a heading-delimited block. Over-long sections are split into
+ * multiple ordered `Section`s, each with its own consecutive `ordinal`, so each
+ * fits a typical embedding window. `text` is prefixed with a
+ * `${lastSlugSegment} — ${title}` head line for lexical/dense matching.
+ */
+export interface Section {
+  article: Slug;
+  title: string;
+  text: string;
+  ordinal: number;
 }
 
-export interface LeafNode {
-  path: LeafPath;
-  frontmatter: LeafFrontmatter;
-  description: string;
-  members: Slug[];
-  domain: string;
+/**
+ * A flat, deterministic index of every page's sections plus an article→section
+ * lookup. `byArticle` maps each article slug to the indices (into `sections`)
+ * of that article's sections, in order.
+ */
+export interface SectionIndex {
+  sections: Section[];
+  byArticle: Map<Slug, number[]>;
 }
 
-export interface LeafTree {
-  leaves: Map<LeafPath, LeafNode>;
-  byPage: Map<Slug, LeafPath[]>;
+/** A page selected from the candidate pool, with whether the turn centers on it. */
+export interface SelectedPage {
+  slug: Slug;
+  pinned: boolean;
 }
 
 export interface WorkingSetEntry {
@@ -56,4 +62,31 @@ export interface MemoryRoutingTurn {
   situationalContext?: string;
 }
 
-export type SelectionSource = "l1+l2" | "core+l2" | "needle" | "carry-forward";
+/**
+ * Canonical ordered list of the lane sources recorded per selection. The
+ * {@link SelectionSource} type is derived from this so a new lane is added in
+ * exactly one place and the runtime list (used for telemetry roll-ups and
+ * source validation) can never drift from the type.
+ *
+ * The `memory_v3_selections.source` column is free-text, so tightening this set
+ * needs no migration: any historical rows with older labels still read back
+ * fine via the permissive `z.string()` row schema.
+ */
+export const SELECTION_SOURCES = [
+  "needle",
+  "dense",
+  "edge",
+  "carry-forward",
+] as const;
+
+export type SelectionSource = (typeof SELECTION_SOURCES)[number];
+
+/**
+ * The candidate-generation lanes — the strict subset of {@link SelectionSource}
+ * a pooled candidate can be tagged with at pool-build time. (`carry-forward` is
+ * the one source assigned later, by the orchestrator's working-set union, not by
+ * a candgen lane.) Defined as `Exclude<SelectionSource, "carry-forward">` so it
+ * can never drift from {@link SELECTION_SOURCES}: adding a lane there widens this
+ * automatically.
+ */
+export type CandidateLane = Exclude<SelectionSource, "carry-forward">;

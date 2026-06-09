@@ -11,9 +11,14 @@ import type { MemoryV3SelectionLog } from "../../../api/responses/memory-v3-sele
 import { isAssistantFeatureFlagEnabled } from "../../../config/assistant-feature-flags.js";
 import { getConfig } from "../../../config/loader.js";
 import { getDb, getSqliteFrom } from "../../../memory/db-connection.js";
-import { renderV3PageContent } from "./page-content.js";
+import { renderV3SectionContent } from "./page-content.js";
 import { renderMemoryBlock } from "./render-injection.js";
-import type { Slug } from "./types.js";
+import {
+  type Section,
+  SELECTION_SOURCES,
+  type SelectionSource,
+  type Slug,
+} from "./types.js";
 
 const MEMORY_V3_SHADOW = "memory-v3-shadow" as const;
 const MEMORY_V3_LIVE = "memory-v3-live" as const;
@@ -72,7 +77,20 @@ export async function getMemoryV3SelectionForInspector(
     pinned: r.pinned === 1,
   }));
   const slugs: Slug[] = selections.map((s) => s.slug);
-  const injectedText = await renderMemoryBlock(slugs, renderV3PageContent);
+  // NOTE: `injectedText` is APPROXIMATE — it renders the full/lead page for
+  // every slug, not the exact matched section live injection used. The inspector
+  // re-renders from persisted rows without re-running orchestration, and the
+  // section identity is not persisted (`memory_v3_selections` stores
+  // slug/source/pinned, not the section ordinal), so the section map is empty
+  // and `renderV3SectionContent` falls back to the full page. Persisting the
+  // injected section (a schema migration) is deliberately deferred: the A/B's
+  // primary signal is slug-level recall via `summarizeSelections`, which is
+  // exact — only this debug-oriented injected text is an approximation.
+  const injectedText = await renderMemoryBlock(
+    slugs,
+    new Map<Slug, Section>(),
+    renderV3SectionContent,
+  );
 
   return {
     turn,
@@ -81,4 +99,58 @@ export async function getMemoryV3SelectionForInspector(
     selections,
     injectedText,
   };
+}
+
+/**
+ * Offline A/B aggregate over a conversation's logged v3 selections. Reads every
+ * `memory_v3_selections` row for the conversation (all turns) and rolls them up
+ * for shadow-vs-v2 inspection without re-rendering any blocks:
+ *
+ *   - `bySource`: count of selection rows per lane source (`needle` / `dense` /
+ *     `edge` / `carry-forward`). Every known source is present (zero when
+ *     unused) so callers can diff two runs without null-guarding; an unknown
+ *     historical/free-text source is ignored (the column is permissive).
+ *   - `turns`: number of distinct turns that logged at least one selection.
+ *   - `distinctSlugs`: number of distinct page slugs selected across all turns —
+ *     the conversation's working-set footprint.
+ *
+ * This is read-only telemetry for comparing a shadow run's lane mix against
+ * v2's logged selections offline; it never re-runs orchestration.
+ */
+export interface SelectionSummary {
+  bySource: Record<SelectionSource, number>;
+  turns: number;
+  distinctSlugs: number;
+}
+
+function isSelectionSource(source: string): source is SelectionSource {
+  return (SELECTION_SOURCES as readonly string[]).includes(source);
+}
+
+export function summarizeSelections(conversationId: string): SelectionSummary {
+  const rows = getSqliteFrom(getDb())
+    .query(
+      /*sql*/ `
+      SELECT turn, slug, source FROM memory_v3_selections
+      WHERE conversation_id = ?
+    `,
+    )
+    .all(conversationId) as Array<{
+    turn: number;
+    slug: string;
+    source: string;
+  }>;
+
+  const bySource = Object.fromEntries(
+    SELECTION_SOURCES.map((source) => [source, 0]),
+  ) as Record<SelectionSource, number>;
+  const turns = new Set<number>();
+  const slugs = new Set<string>();
+  for (const row of rows) {
+    if (isSelectionSource(row.source)) bySource[row.source] += 1;
+    turns.add(row.turn);
+    slugs.add(row.slug);
+  }
+
+  return { bySource, turns: turns.size, distinctSlugs: slugs.size };
 }

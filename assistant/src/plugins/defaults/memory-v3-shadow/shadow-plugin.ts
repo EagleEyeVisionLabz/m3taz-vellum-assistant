@@ -15,9 +15,10 @@
  *   - both OFF: orchestration is skipped entirely.
  *
  * On each turn (either flag on):
- *   1. Lazy-init the v3 lanes ONCE across the whole process (leaf tree, core
- *      set, BM25 needle, carry-forward working set), memoizing the init
- *      promise so concurrent first turns share a single build.
+ *   1. Lazy-init the v3 lanes ONCE across the whole process (section index,
+ *      section-grain BM25 needle, dense lane config, link-graph edge graph,
+ *      carry-forward working set), memoizing the init promise so concurrent
+ *      first turns share a single build.
  *   2. Build a {@link MemoryRoutingTurn} from the conversation's recent messages.
  *   3. Run {@link orchestrate} and record its selection set to
  *      `memory_v3_selections` with a best-effort lane attribution.
@@ -37,23 +38,25 @@ import { getMessages } from "../../../memory/conversation-crud.js";
 import { getDb, getSqliteFrom } from "../../../memory/db-connection.js";
 import { stringifyMessageContent } from "../../../memory/message-content.js";
 import { getPageIndex } from "../../../memory/v2/page-index.js";
+import { readPage, renderPageContent } from "../../../memory/v2/page-store.js";
 import { getLogger } from "../../../util/logger.js";
 import {
   getWorkspaceDir,
   getWorkspacePromptPath,
 } from "../../../util/platform.js";
 import { stripCommentLines } from "../../../util/strip-comment-lines.js";
-import { injectCapabilitiesLeaf, isCapabilitySlug } from "./capabilities.js";
-import { loadCore } from "./core.js";
-import type { NeedleIndex } from "./needle.js";
-import { buildNeedleIndex } from "./needle.js";
+import { capabilityOrDiskBody } from "./capabilities.js";
+import type { EdgeGraph } from "./edge.js";
+import { buildEdgeGraph } from "./edge.js";
 import type { OrchestrateResult } from "./orchestrate.js";
 import { orchestrate } from "./orchestrate.js";
-import { coreSlugs, loadLeafTree, resolveDataDir } from "./tree.js";
+import { ensureSectionCollection } from "./section-dense-store.js";
+import type { SectionNeedle } from "./section-needle.js";
+import { buildSectionNeedle } from "./section-needle.js";
+import { buildSectionIndex } from "./sections.js";
 import {
-  type LeafPath,
-  type LeafTree,
   type MemoryRoutingTurn,
+  type SectionIndex,
   type SelectionSource,
   type Slug,
 } from "./types.js";
@@ -74,26 +77,29 @@ const RECENT_CONTEXT_MESSAGES = 6;
  * carry-forward lane.
  */
 export interface ShadowLanes {
-  tree: LeafTree;
-  core: Set<LeafPath>;
-  needle: NeedleIndex;
+  sectionIndex: SectionIndex;
+  needle: SectionNeedle;
+  /** Config the dense lane needs to embed the query + search the section
+   *  collection. */
+  denseConfig: AssistantConfig;
+  edgeGraph: EdgeGraph;
   workingSet: WorkingSet;
 }
 
 /**
  * Memoized init promise. Caching the PROMISE (not the resolved value) means
  * concurrent first turns all await the same build instead of racing several
- * `loadLeafTree`/`buildNeedleIndex` passes.
+ * section-index / needle / edge-graph passes.
  */
 let lanesPromise: Promise<ShadowLanes> | null = null;
 
 /**
  * Drop the memoized lanes so the NEXT `getLanes` rebuilds them from scratch
- * (fresh topic-tree load + fresh needle index). The rebuild is lazy — this only
- * clears the cache, so the cost is paid by the next caller, and concurrent
- * first-callers after the invalidation still share a single build via the
- * re-memoized promise. Call this whenever the underlying tree or needle sources
- * change on disk.
+ * (fresh section index + fresh needle + fresh edge graph). The rebuild is lazy
+ * — this only clears the cache, so the cost is paid by the next caller, and
+ * concurrent first-callers after the invalidation still share a single build via
+ * the re-memoized promise. Call this whenever the underlying pages change on
+ * disk.
  */
 export function invalidateLanes(): void {
   lanesPromise = null;
@@ -104,48 +110,78 @@ export function resetShadowLanesForTests(): void {
   invalidateLanes();
 }
 
-/**
- * Pull a page's summary from the existing v2 page index. Missing summaries
- * (and any read failure) degrade to "" — the needle and L2 selector treat an
- * empty summary as "no signal" rather than throwing.
- */
-async function pageSummary(slug: Slug): Promise<string> {
-  try {
-    const index = await getPageIndex(getWorkspaceDir());
-    return index.bySlug.get(slug)?.summary ?? "";
-  } catch {
-    return "";
-  }
-}
-
 async function initLanes(config: AssistantConfig): Promise<ShadowLanes> {
-  const dataDir = resolveDataDir();
   const pageIndex = await getPageIndex(getWorkspaceDir());
-  const pageLeaves = new Map<Slug, LeafPath[]>();
-  for (const entry of pageIndex.entries) {
-    pageLeaves.set(entry.slug, entry.leaves);
+  const slugs = pageIndex.entries.map((entry) => entry.slug);
+
+  // Read each page ONCE and feed BOTH forms downstream: the frontmatter-stripped
+  // body to the section index (lexical/dense matching), and the raw page
+  // (frontmatter + body) to the edge graph (so the `links:` frontmatter is
+  // available). A per-slug cache holds the parsed page so the second consumer
+  // reuses the first read.
+  const pageCache = new Map<Slug, { body: string; raw: string } | null>();
+  async function loadPage(
+    slug: Slug,
+  ): Promise<{ body: string; raw: string } | null> {
+    if (pageCache.has(slug)) return pageCache.get(slug)!;
+    let loaded: { body: string; raw: string } | null = null;
+    try {
+      const page = await readPage(getWorkspaceDir(), slug);
+      if (page) loaded = { body: page.body, raw: renderPageContent(page) };
+    } catch {
+      loaded = null;
+    }
+    pageCache.set(slug, loaded);
+    return loaded;
   }
-  const tree = await loadLeafTree(dataDir, pageLeaves);
-  const core = await loadCore(dataDir);
+  // Synthetic capability slugs (skills / CLI commands) have no on-disk page, so
+  // they contribute their rendered capability content to the section index —
+  // exactly the content `page-content.ts` injects for them. This puts them in
+  // the section index, so the needle lane (and, once a backfill embeds them, the
+  // dense lane) ranks them by relevance like any other page, instead of being
+  // blindly added to the select pool every turn. Real pages read their body
+  // through the cached `loadPage`.
+  const pageBody = async (slug: Slug): Promise<string> =>
+    capabilityOrDiskBody(slug, async (s) => (await loadPage(s))?.body ?? "");
+  const pageRaw = async (slug: Slug): Promise<string> => {
+    const loaded = await loadPage(slug);
+    if (!loaded) throw new Error(`page not found: ${slug}`);
+    return loaded.raw;
+  };
 
-  // Always-on synthetic capabilities leaf: skill + CLI-command rows the page
-  // index already carries (with summaries). Injecting them as leaf members puts
-  // them in the needle corpus (`tree.byPage`) and, via `core`, makes L1 always
-  // open the leaf so L2 selects the relevant subset each turn — matching v2's
-  // "always in the pool, router-selected" capability surfacing. Done before
-  // `buildNeedleIndex` so the synthetic members are indexed.
-  const capabilitySlugs = pageIndex.entries
-    .map((entry) => entry.slug)
-    .filter(isCapabilitySlug);
-  injectCapabilitiesLeaf(tree, core, capabilitySlugs);
+  const sectionIndex = await buildSectionIndex(slugs, pageBody);
+  const needle = buildSectionNeedle(sectionIndex);
+  const edgeGraph = await buildEdgeGraph(pageIndex.entries, pageRaw, {
+    hubDegree: config.memory.v3.edge.hubDegree,
+  });
+  // Ensuring the dense collection is best-effort: the needle + edge lanes and
+  // carry-forward are in-memory and independent of Qdrant, so a Qdrant outage
+  // must NOT reject lane init (which would return `null` from observeTurn and
+  // disable ALL of v3, plus poison the memoized lanes until invalidation). On
+  // failure we log and continue with the dense lane degraded — denseLane already
+  // returns no hits on a Qdrant error, and maintain/backfill re-ensure the
+  // collection once Qdrant recovers.
+  try {
+    await ensureSectionCollection(config);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "memory-v3: section collection ensure failed; continuing with the dense lane degraded",
+    );
+  }
 
-  const needle = await buildNeedleIndex(tree, pageSummary);
   const workingSet = new WorkingSet(
     config.memory.v3.workingSet.maxPages,
     config.memory.v3.workingSet.evictWindow,
   );
 
-  return { tree, core, needle, workingSet };
+  return {
+    sectionIndex,
+    needle,
+    denseConfig: config,
+    edgeGraph,
+    workingSet,
+  };
 }
 
 /** Lazy, memoized accessor for the shadow lanes. */
@@ -180,11 +216,11 @@ function readNowContext(): string | null {
 }
 
 /**
- * Compose the situational signal threaded into L1 routing and L2 selection: the
- * current date plus the live NOW.md scratchpad. The date alone is a weak signal,
- * but together with the scratchpad it lets retrieval surface a leaf the message
- * never names (e.g. an anniversary that falls today). Always returns at least
- * the date line — this mirrors the `c_now`/NOW.md signal the v2 retriever uses.
+ * Compose the situational signal threaded into pool selection: the current date
+ * plus the live NOW.md scratchpad. The date alone is a weak signal, but together
+ * with the scratchpad it lets retrieval surface a page the message never names
+ * (e.g. an anniversary that falls today). Always returns at least the date line
+ * — this mirrors the `c_now`/NOW.md signal the v2 retriever uses.
  */
 function buildSituationalContext(): string {
   const now = readNowContext();
@@ -237,32 +273,24 @@ interface SelectionRow {
 }
 
 /**
- * Map an orchestrate result onto telemetry rows with best-effort lane
+ * Map an orchestrate result onto telemetry rows with precise per-lane source
  * attribution.
  *
- * - A current selection whose page belongs to a core leaf → `"core+l2"`,
- *   otherwise `"l1+l2"`.
+ * - A current selection is tagged with the candgen lane that FIRST surfaced its
+ *   page this turn — `result.laneBySlug` (`"needle"` / `"dense"` / `"edge"`),
+ *   recorded at pool-build time. (`"needle"` is the fallback if a selected slug
+ *   is somehow absent from the lane map, which should not happen since every
+ *   pooled candidate is recorded there.)
  * - A slug in `finalInjection` but NOT re-selected this turn → `"carry-forward"`.
- *
- * Precise needle attribution is a documented follow-up: the needle lane only
- * widens the open set, so a needle-surfaced page that survives L2 selection is
- * indistinguishable here from an L1-routed one. This coarse mapping is
- * acceptable for v0 shadow telemetry.
  */
-function attributeSelections(
-  tree: LeafTree,
-  core: Set<LeafPath>,
-  result: OrchestrateResult,
-): SelectionRow[] {
-  const coreOwnedSlugs = coreSlugs(tree, core);
-
+export function attributeSelections(result: OrchestrateResult): SelectionRow[] {
   const rows: SelectionRow[] = [];
   const seen = new Set<Slug>();
   for (const sel of result.currentSelections) {
     seen.add(sel.slug);
     rows.push({
       slug: sel.slug,
-      source: coreOwnedSlugs.has(sel.slug) ? "core+l2" : "l1+l2",
+      source: result.laneBySlug.get(sel.slug) ?? "needle",
       pinned: sel.pinned ? 1 : 0,
     });
   }
@@ -275,7 +303,7 @@ function attributeSelections(
 }
 
 /** Write the attributed selection rows to `memory_v3_selections`. */
-function writeSelections(
+export function writeSelections(
   conversationId: string,
   turn: number,
   rows: SelectionRow[],
@@ -311,16 +339,21 @@ export async function observeTurn(
 
     const cfg = getConfig();
     const lanes = await getLanes(cfg);
+    const v3 = cfg.memory.v3;
     const result = await orchestrate(turn, {
-      tree: lanes.tree,
-      core: lanes.core,
+      sectionIndex: lanes.sectionIndex,
       needle: lanes.needle,
+      denseConfig: lanes.denseConfig,
+      edgeGraph: lanes.edgeGraph,
       workingSet: lanes.workingSet,
-      pageSummary,
-      l2Concurrency: cfg.memory.v3.l2Concurrency,
+      needleK: v3.needleK,
+      denseK: v3.denseK,
+      edgeSeeds: v3.edge.seedCount,
+      edgePerSeed: v3.edge.perSeed,
+      edgeCap: v3.edge.cap,
     });
 
-    const rows = attributeSelections(lanes.tree, lanes.core, result);
+    const rows = attributeSelections(result);
     writeSelections(conversationId, turnIndex, rows);
     return result;
   } catch (err) {

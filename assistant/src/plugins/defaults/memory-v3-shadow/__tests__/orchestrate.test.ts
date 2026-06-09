@@ -1,36 +1,37 @@
 /**
- * Tests for `assistant/src/memory/v3/orchestrate.ts`.
+ * Tests for `orchestrate.ts` (section-lane pipeline).
  *
- * The orchestrator composes four lanes: L1 routing + BM25 needle (parallel) →
- * open set (routed ∪ core ∪ needle-owning leaves) → bounded per-leaf L2
- * selection → carry-forward working set (record + evict) → final injection.
+ * The orchestrator composes three deterministic candidate lanes — the
+ * section-grain BM25 needle, the dense lane, and link-graph edge expansion —
+ * into ONE unified pool, runs a SINGLE forced-tool select over the pool, then
+ * carries forward the working set. Synthetic capability pages (skills / CLI
+ * commands) are indexed like any other page, so they enter the pool through the
+ * lanes (e.g. the needle) rather than being always-added.
  *
- * The provider is stubbed (no network). A single stub answers BOTH the L1
- * `open_leaves` call and the per-leaf L2 `select_pages` calls by inspecting the
- * forced tool name and, for L2, the `<leaf>...</leaf>` tag in the prompt. The
- * needle is a hand-built fake so we control its hits directly.
+ * The select provider is stubbed (no network); a single stub answers the one
+ * `select_pages` call per turn by reading the numbered `<candidates>` block.
+ * The dense lane is stubbed at the module boundary. The needle and edge graph
+ * are real, built from tiny inline fixtures so the pool union is exercised
+ * end-to-end.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 
+import type { PageIndexEntry } from "../../../../memory/v2/page-index.js";
 import type {
   Message,
   Provider,
   ProviderResponse,
 } from "../../../../providers/types.js";
-import type { NeedleIndex } from "../needle.js";
-import type {
-  LeafNode,
-  LeafPath,
-  LeafTree,
-  MemoryRoutingTurn,
-  Slug,
-} from "../types.js";
-import evalTurns from "./fixtures/eval-turns.json" with { type: "json" };
+import type { EdgeGraph } from "../edge.js";
+import { buildEdgeGraph } from "../edge.js";
+import { buildSectionNeedle } from "../section-needle.js";
+import { buildSectionIndex } from "../sections.js";
+import type { MemoryRoutingTurn, SectionIndex, Slug } from "../types.js";
 
 // ---------------------------------------------------------------------------
-// Provider mock installed BEFORE the orchestrator import so router.ts and
-// selector.ts observe it at load time.
+// Module stubs installed BEFORE the orchestrator import so pool-select and the
+// dense lane observe them at load time.
 // ---------------------------------------------------------------------------
 
 let providerStub: Provider | null = null;
@@ -48,61 +49,69 @@ mock.module("../../../../util/logger.js", () => ({
     }),
 }));
 
-const { orchestrate, DEFAULT_NEEDLE_K } = await import("../orchestrate.js");
+// The dense lane is stubbed: each test sets `denseHits` to control which
+// articles (+ matched ordinals) the dense lane returns. The stub DELEGATES to
+// the real `denseLane` unless this file's tests are running (`denseMockActive`),
+// so the process-global `mock.module` cannot leak fake behavior into
+// dense.test.ts (which exercises the real lane). Spread the real module so
+// every other export (`OVERSAMPLE`) stays present.
+const realDense = { ...(await import("../dense.js")) };
+let denseMockActive = false;
+let denseHits: Array<{ article: Slug; section: number }> = [];
+mock.module("../dense.js", () => ({
+  ...realDense,
+  denseLane: async (...args: Parameters<typeof realDense.denseLane>) =>
+    denseMockActive ? denseHits : realDense.denseLane(...args),
+}));
+
+const { orchestrate, DEFAULT_NEEDLE_K, DEFAULT_DENSE_K } =
+  await import("../orchestrate.js");
 const { WorkingSet } = await import("../working-set.js");
 
 // ---------------------------------------------------------------------------
-// Fixture types + helpers.
+// Fixtures: a tiny corpus of pages with bodies + `links:` frontmatter.
 // ---------------------------------------------------------------------------
 
-interface LeafSelection {
-  ids: number[];
-  pinned_ids: number[];
-}
-interface EvalTurn {
-  name: string;
-  currentMessage: string;
-  routeIds: number[];
-  leafSelections: Record<LeafPath, LeafSelection>;
-  expectedOpenedLeaves: LeafPath[];
-  expectedFinalInjection: Slug[];
-}
-const TURNS = (evalTurns as { turns: EvalTurn[] }).turns;
+const PAGES: Record<Slug, string> = {
+  "topic-a": "lead for topic a\n## Details\napple banana about topic a",
+  "topic-b": "lead for topic b\n## More\ncherry date about topic b",
+  "topic-c": "lead for topic c\n## Notes\nelderberry fig about topic c",
+  "topic-d": "lead for topic d\n## Notes\ngrape about topic d",
+};
 
-function makeLeaf(path: LeafPath, members: Slug[]): LeafNode {
-  return {
-    path,
-    frontmatter: { path, in_core: false },
-    description: `description for ${path}`,
-    members,
-    domain: path.split("/")[0],
-  };
-}
+/** Raw page = frontmatter (with `links:`) + body. */
+const RAW: Record<Slug, string> = {
+  "topic-a": `---\nlinks:\n  - "topic-d — the curated edge from a to d"\n---\n${PAGES["topic-a"]}`,
+  "topic-b": `---\nedges: []\n---\n${PAGES["topic-b"]}`,
+  "topic-c": `---\nedges: []\n---\n${PAGES["topic-c"]}`,
+  "topic-d": `---\nedges: []\n---\n${PAGES["topic-d"]}`,
+};
 
-/**
- * Synthetic tree. Sorted leaf order is [domain-a/topic-x, domain-a/topic-y],
- * so L1 id 1 → topic-x, id 2 → topic-y.
- */
-function makeTree(): LeafTree {
-  const leaves: LeafNode[] = [
-    makeLeaf("domain-a/topic-x", ["page-a", "page-b"]),
-    makeLeaf("domain-a/topic-y", ["page-c"]),
-  ];
-  const byPage = new Map<Slug, LeafPath[]>();
-  for (const leaf of leaves) {
-    for (const slug of leaf.members) {
-      byPage.set(slug, [...(byPage.get(slug) ?? []), leaf.path]);
-    }
-  }
-  return { leaves: new Map(leaves.map((n) => [n.path, n])), byPage };
+const SLUGS = Object.keys(PAGES);
+
+function makeEntries(): PageIndexEntry[] {
+  return SLUGS.map((slug, i) => ({
+    id: i + 1,
+    slug,
+    summary: `summary of ${slug}`,
+    edges: [],
+    leaves: [],
+    modifiedAt: 0,
+  }));
 }
 
-const summaryOf = async (slug: Slug): Promise<string> => `summary of ${slug}`;
-
-/** Needle that returns a fixed slug list, ignoring the query. */
-function fakeNeedle(hits: Slug[]): NeedleIndex {
-  return { query: (_text, k) => hits.slice(0, k) };
+async function buildLanes(): Promise<{
+  sectionIndex: SectionIndex;
+  needle: ReturnType<typeof buildSectionNeedle>;
+  edgeGraph: EdgeGraph;
+}> {
+  const sectionIndex = await buildSectionIndex(SLUGS, async (s) => PAGES[s]!);
+  const needle = buildSectionNeedle(sectionIndex);
+  const edgeGraph = await buildEdgeGraph(makeEntries(), async (s) => RAW[s]!);
+  return { sectionIndex, needle, edgeGraph };
 }
+
+const config = {} as never;
 
 function makeTurn(
   turnNumber: number,
@@ -116,324 +125,538 @@ function makeTurn(
   };
 }
 
-function toolUseResponse(
-  name: string,
-  input: Record<string, unknown>,
-): ProviderResponse {
+function toolUseResponse(input: Record<string, unknown>): ProviderResponse {
   return {
     model: "stub-model",
     stopReason: "tool_use",
     usage: { inputTokens: 0, outputTokens: 0 },
-    content: [{ type: "tool_use", id: "tu-1", name, input }],
+    content: [{ type: "tool_use", id: "tu-1", name: "select_pages", input }],
   };
 }
 
-/** Last `<leaf>X</leaf>` tag found in an L2 request, or undefined. */
-function leafFromMessages(messages: Message[]): LeafPath | undefined {
+/** Parse the numbered `<candidates>` block back into an ordered slug list. */
+function candidateSlugs(messages: Message[]): Slug[] {
   for (const msg of messages) {
     for (const block of msg.content) {
-      if (block.type === "text") {
-        const m = /<leaf>([^<]+)<\/leaf>/.exec(block.text);
-        if (m) return m[1];
-      }
+      if (block.type !== "text") continue;
+      const m = /<candidates>\n([\s\S]*?)\n<\/candidates>/.exec(block.text);
+      if (!m) continue;
+      return m[1]
+        .split("\n")
+        .map((line) => /^\[\d+\] (\S+) —/.exec(line)?.[1])
+        .filter((s): s is string => !!s);
     }
   }
-  return undefined;
+  return [];
 }
 
 /**
- * Build a provider that answers L1 `open_leaves` with `routeIds` and each L2
- * `select_pages` call with the per-leaf selection from the fixture turn.
+ * Provider that selects the pool candidates whose slug is in `keep` (mapping
+ * each back to its 1-based id), pinning those in `pin`. Captures the rendered
+ * candidate list for pool assertions.
  */
-function providerForTurn(turn: EvalTurn): Provider {
+let lastPool: Slug[] = [];
+let selectCalls = 0;
+function selectProvider(keep: Slug[], pin: Slug[] = []): Provider {
   return {
     name: "stub",
-    sendMessage: async (messages, options) => {
-      const toolName = options?.tools?.[0]?.name;
-      if (toolName === "open_leaves") {
-        return toolUseResponse("open_leaves", { ids: turn.routeIds });
-      }
-      // L2 select_pages — pick the selection for the leaf under selection.
-      const leaf = leafFromMessages(messages);
-      const sel = (leaf ? turn.leafSelections[leaf] : undefined) ?? {
-        ids: [],
-        pinned_ids: [],
-      };
-      return toolUseResponse("select_pages", {
-        ids: sel.ids,
-        pinned_ids: sel.pinned_ids,
+    sendMessage: async (messages) => {
+      selectCalls++;
+      const pool = candidateSlugs(messages);
+      lastPool = pool;
+      const ids: number[] = [];
+      const pinned_ids: number[] = [];
+      pool.forEach((slug, i) => {
+        if (keep.includes(slug)) ids.push(i + 1);
+        if (pin.includes(slug)) pinned_ids.push(i + 1);
       });
+      return toolUseResponse({ ids, pinned_ids });
     },
   };
 }
 
 beforeEach(() => {
+  denseMockActive = true;
   providerStub = null;
+  denseHits = [];
+  lastPool = [];
+  selectCalls = 0;
+});
+
+afterAll(() => {
+  denseMockActive = false;
 });
 
 // ---------------------------------------------------------------------------
-// Integration: drive the whole fixture sequence through ONE shared WorkingSet.
+// Pool composition: the candidate pool is the union of the lanes. Synthetic
+// capability pages are no longer always-added — they enter through a lane (see
+// the dedicated test below).
 // ---------------------------------------------------------------------------
 
-describe("orchestrate — fixture sequence (carry-forward)", () => {
-  test("each turn's finalInjection matches the fixture", async () => {
-    const tree = makeTree();
-    const workingSet = new WorkingSet();
-    const needle = fakeNeedle([]);
+describe("orchestrate — candidate pool composition", () => {
+  test("pool unions needle ∪ dense ∪ edge; one select runs", async () => {
+    const lanes = await buildLanes();
+    // "apple" hits topic-a (needle). Dense returns topic-b. topic-a links to
+    // topic-d (edge).
+    denseHits = [{ article: "topic-b", section: 0 }];
+    providerStub = selectProvider([]); // selection is irrelevant to pool union
 
-    for (const turn of TURNS) {
-      providerStub = providerForTurn(turn);
-      const result = await orchestrate(
-        makeTurn(TURNS.indexOf(turn) + 1, turn.currentMessage),
-        { tree, core: new Set(), needle, workingSet, pageSummary: summaryOf },
-      );
-      expect(result.openedLeaves).toEqual(turn.expectedOpenedLeaves);
-      expect(result.finalInjection).toEqual(turn.expectedFinalInjection);
-    }
+    await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+
+    expect(selectCalls).toBe(1);
+    expect(new Set(lastPool)).toEqual(
+      new Set(["topic-a", "topic-b", "topic-d"]),
+    );
   });
 
-  test("a slug pinned in turn 1 carries into turn 2 without re-selection", async () => {
-    const tree = makeTree();
+  test("a synthetic capability page enters the pool via the needle lane", async () => {
+    // A capability slug indexed with body content (the section index treats it
+    // like any other page) is ranked by the real needle when the query matches
+    // its text — this is how synthetic pages reach the pool now that they are no
+    // longer always-added.
+    const CAP: Slug = "skills/example";
+    const sectionIndex = await buildSectionIndex([...SLUGS, CAP], async (s) =>
+      s === CAP
+        ? "# Skill: example\nuse the kumquat skill to do the thing"
+        : PAGES[s]!,
+    );
+    const needle = buildSectionNeedle(sectionIndex);
+    const edgeGraph = await buildEdgeGraph(makeEntries(), async (s) => RAW[s]!);
+
+    providerStub = selectProvider([]); // selection irrelevant to pool union
+    await orchestrate(makeTurn(1, "kumquat"), {
+      sectionIndex,
+      needle,
+      denseConfig: config,
+      edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+
+    // The needle ranked the capability page on the "kumquat" term, so it is in
+    // the candidate pool.
+    expect(lastPool).toContain(CAP);
+  });
+
+  test("edge curated link description becomes the edge candidate's descriptor", async () => {
+    const lanes = await buildLanes();
+    let descriptorLine = "";
+    providerStub = {
+      name: "stub",
+      sendMessage: async (messages) => {
+        for (const msg of messages) {
+          for (const block of msg.content) {
+            if (block.type !== "text") continue;
+            const m = /\[\d+\] topic-d — ([^\n]+)/.exec(block.text);
+            if (m) descriptorLine = m[1]!;
+          }
+        }
+        return toolUseResponse({ ids: [] });
+      },
+    };
+
+    await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+
+    expect(descriptorLine).toContain("the curated edge from a to d");
+  });
+
+  test("needleK and denseK default to their constants", async () => {
+    const lanes = await buildLanes();
+    let needleK = -1;
+    const needle = {
+      query: (_t: string, k: number) => {
+        needleK = k;
+        return [];
+      },
+      bestSection: () => -1,
+    };
+    providerStub = selectProvider([]);
+    await orchestrate(makeTurn(1, "x"), {
+      sectionIndex: lanes.sectionIndex,
+      needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+    expect(needleK).toBe(DEFAULT_NEEDLE_K);
+    expect(DEFAULT_DENSE_K).toBe(100);
+  });
+
+  test("sectionBySlug is populated from matched lane sections", async () => {
+    const lanes = await buildLanes();
+    denseHits = [];
+    providerStub = selectProvider(["topic-a"]);
+    const result = await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+    // topic-a matched "apple" in its `## Details` section.
+    expect(result.sectionBySlug.get("topic-a")?.article).toBe("topic-a");
+    expect(result.sectionBySlug.get("topic-a")?.text).toContain("apple");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edge-only injection: a page surfaced ONLY by the edge lane (the query did not
+// lexically hit it) records NO matched section, so injection falls back to the
+// FULL page (the curated `links` description — not the often-empty lead the
+// query never hit — is what made the candidate relevant). The best-section text
+// is kept only as the select-pool descriptor fallback.
+// ---------------------------------------------------------------------------
+
+describe("orchestrate — edge-only injection", () => {
+  test("an edge-only page records NO sectionBySlug entry (→ full-page inject)", async () => {
+    const lanes = await buildLanes();
+    // "apple" hits topic-a (needle); topic-a links to topic-d (edge-only — the
+    // query never hits topic-d). Select topic-d so it is in the result.
+    denseHits = [];
+    providerStub = selectProvider(["topic-d"]);
+    const result = await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+
+    // topic-d was selected and injected, but with NO matched section — so
+    // `renderV3SectionContent(slug, undefined)` falls back to the full page.
+    expect(result.finalInjection).toContain("topic-d");
+    expect(result.sectionBySlug.has("topic-d")).toBe(false);
+  });
+
+  test("an edge-only page still carries the curated links description as its descriptor", async () => {
+    const lanes = await buildLanes();
+    let descriptorLine = "";
+    providerStub = {
+      name: "stub",
+      sendMessage: async (messages) => {
+        for (const msg of messages) {
+          for (const block of msg.content) {
+            if (block.type !== "text") continue;
+            const m = /\[\d+\] topic-d — ([^\n]+)/.exec(block.text);
+            if (m) descriptorLine = m[1]!;
+          }
+        }
+        return toolUseResponse({ ids: [] });
+      },
+    };
+
+    await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+
+    // The curated `links` description (not the lead text) is the descriptor.
+    expect(descriptorLine).toContain("the curated edge from a to d");
+  });
+
+  test("an edge-only page with no curated description falls back to bestSection text as the descriptor", async () => {
+    // A bare `links:` entry (no ` — `) carries NO description, so the edge
+    // candidate's descriptor falls back to the page's best section against the
+    // query. The query never hits dst-page, so bestSection returns its lead;
+    // that lead text becomes the descriptor (and the page is still injected in
+    // full, with no sectionBySlug entry).
+    const pages: Record<Slug, string> = {
+      "src-page": "lead for src\n## Body\nalpha bravo about src",
+      "dst-page": "lead content for dst page\n## Extra\nnothing relevant here",
+    };
+    const raw: Record<Slug, string> = {
+      // bare slug — no ` — ` separator → undefined curated description.
+      "src-page": `---\nlinks:\n  - "dst-page"\n---\n${pages["src-page"]}`,
+      "dst-page": `---\nedges: []\n---\n${pages["dst-page"]}`,
+    };
+    const slugs = Object.keys(pages);
+    const entries: PageIndexEntry[] = slugs.map((slug, i) => ({
+      id: i + 1,
+      slug,
+      summary: `summary of ${slug}`,
+      edges: [],
+      leaves: [],
+      modifiedAt: 0,
+    }));
+    const sectionIndex = await buildSectionIndex(slugs, async (s) => pages[s]!);
+    const needle = buildSectionNeedle(sectionIndex);
+    const edgeGraph = await buildEdgeGraph(entries, async (s) => raw[s]!);
+
+    let descriptorLine = "";
+    providerStub = {
+      name: "stub",
+      sendMessage: async (messages) => {
+        for (const msg of messages) {
+          for (const block of msg.content) {
+            if (block.type !== "text") continue;
+            const m = /\[\d+\] dst-page — ([^\n]+)/.exec(block.text);
+            if (m) descriptorLine = m[1]!;
+          }
+        }
+        return toolUseResponse({ ids: [] });
+      },
+    };
+
+    // "alpha" hits src-page (needle); src-page links to dst-page (edge-only, no
+    // curated description).
+    const result = await orchestrate(makeTurn(1, "alpha"), {
+      sectionIndex,
+      needle,
+      denseConfig: config,
+      edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+
+    // Descriptor fell back to dst-page's lead text; still no matched section.
+    expect(descriptorLine).toContain("lead content for dst page");
+    expect(result.sectionBySlug.has("dst-page")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dense liveness: a dense hit whose article is no longer in the live section
+// index (its page was deleted; its Qdrant points linger) is dropped from the
+// pool, so a deleted page can never be surfaced via the dense lane.
+// ---------------------------------------------------------------------------
+
+describe("orchestrate — dense liveness filter", () => {
+  test("a dense hit absent from sectionIndex.byArticle is dropped from the pool", async () => {
+    const lanes = await buildLanes();
+    // Dense returns a live page (topic-b) AND a deleted page (gone-page) whose
+    // points still linger in Qdrant but which is absent from the section index.
+    denseHits = [
+      { article: "topic-b", section: 0 },
+      { article: "gone-page", section: 0 },
+    ];
+    providerStub = selectProvider([]); // selection irrelevant to pool membership
+    const result = await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+
+    // The live dense hit is pooled; the deleted page is dropped entirely.
+    expect(lastPool).toContain("topic-b");
+    expect(lastPool).not.toContain("gone-page");
+    expect(result.laneBySlug.has("gone-page")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lane provenance: each pooled slug records the candgen lane that FIRST
+// surfaced it (needle → dense → edge precedence), exposed via
+// `result.laneBySlug` so the selection telemetry can attribute true sources.
+// ---------------------------------------------------------------------------
+
+describe("orchestrate — lane provenance (laneBySlug)", () => {
+  test("laneBySlug tags each pooled slug with its surfacing lane", async () => {
+    const lanes = await buildLanes();
+    // "apple" hits topic-a (needle). Dense returns topic-b. topic-a links to
+    // topic-d (edge). So each lane contributes exactly one distinct slug.
+    denseHits = [{ article: "topic-b", section: 0 }];
+    providerStub = selectProvider([]); // selection irrelevant to pool provenance
+    const result = await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+
+    expect(result.laneBySlug.get("topic-a")).toBe("needle");
+    expect(result.laneBySlug.get("topic-b")).toBe("dense");
+    expect(result.laneBySlug.get("topic-d")).toBe("edge");
+  });
+
+  test("a slug surfaced by needle AND dense keeps the needle lane (first wins)", async () => {
+    const lanes = await buildLanes();
+    // topic-a is surfaced by the needle on "apple"; dense ALSO returns topic-a.
+    // Needle runs first (step 2a before 2b), so the recorded lane stays needle.
+    denseHits = [{ article: "topic-a", section: 0 }];
+    providerStub = selectProvider([]);
+    const result = await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+
+    expect(result.laneBySlug.get("topic-a")).toBe("needle");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Carry-forward: same working-set semantics as the prior tree pipeline.
+// ---------------------------------------------------------------------------
+
+describe("orchestrate — carry-forward", () => {
+  test("a page selected+pinned in turn 1 carries into turn 2 without re-selection", async () => {
+    const lanes = await buildLanes();
     const workingSet = new WorkingSet();
-    const needle = fakeNeedle([]);
 
-    // Turn 1 selects+pins page-a.
-    providerStub = providerForTurn(TURNS[0]);
-    await orchestrate(makeTurn(1, TURNS[0].currentMessage), {
-      tree,
-      core: new Set(),
-      needle,
+    // Turn 1 selects+pins topic-a.
+    providerStub = selectProvider(["topic-a"], ["topic-a"]);
+    await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
       workingSet,
-      pageSummary: summaryOf,
     });
 
-    // Turn 2 opens a DIFFERENT leaf and never re-selects page-a.
-    providerStub = providerForTurn(TURNS[1]);
-    const t2 = await orchestrate(makeTurn(2, TURNS[1].currentMessage), {
-      tree,
-      core: new Set(),
-      needle,
+    // Turn 2 selects a DIFFERENT page and never re-selects topic-a.
+    denseHits = [{ article: "topic-b", section: 0 }];
+    providerStub = selectProvider(["topic-b"]);
+    const t2 = await orchestrate(makeTurn(2, "cherry"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
       workingSet,
-      pageSummary: summaryOf,
     });
 
-    expect(t2.currentSelections.map((s) => s.slug)).not.toContain("page-a");
-    expect(t2.finalInjection).toContain("page-a");
+    expect(t2.currentSelections.map((s) => s.slug)).not.toContain("topic-a");
+    expect(t2.finalInjection).toContain("topic-a");
   });
 
   test("carry-forward survives a turn whose selections fill the cap", async () => {
-    const tree = makeTree();
+    const lanes = await buildLanes();
     // Cap of 1: under a naive record-then-cap order this turn's own selection
     // would evict the carried page before injection. Snapshotting the carry
     // BEFORE recording this turn keeps the earlier page in the injection.
     const workingSet = new WorkingSet(1);
-    const needle = fakeNeedle([]);
-    const stub = (selectIds: number[]): Provider => ({
-      name: "stub",
-      sendMessage: async (_messages, options) =>
-        options?.tools?.[0]?.name === "open_leaves"
-          ? toolUseResponse("open_leaves", { ids: [1] })
-          : toolUseResponse("select_pages", { ids: selectIds, pinned_ids: [] }),
-    });
 
-    providerStub = stub([1]); // turn 1 → page-a
-    await orchestrate(makeTurn(1, "page a"), {
-      tree,
-      core: new Set(),
-      needle,
+    providerStub = selectProvider(["topic-a"]); // turn 1 → topic-a
+    await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
       workingSet,
-      pageSummary: summaryOf,
     });
 
-    providerStub = stub([2]); // turn 2 → page-b, never re-selects page-a
-    const t2 = await orchestrate(makeTurn(2, "page b"), {
-      tree,
-      core: new Set(),
-      needle,
+    denseHits = [{ article: "topic-b", section: 0 }];
+    providerStub = selectProvider(["topic-b"]); // turn 2 → topic-b
+    const t2 = await orchestrate(makeTurn(2, "cherry"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
       workingSet,
-      pageSummary: summaryOf,
     });
 
-    expect(t2.currentSelections.map((s) => s.slug)).toEqual(["page-b"]);
-    expect(t2.finalInjection).toContain("page-a"); // carried despite the cap
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Lane composition: needle and core fold into the open set.
-// ---------------------------------------------------------------------------
-
-describe("orchestrate — open set composition", () => {
-  test("needle hits add their owning leaves to the open set", async () => {
-    const tree = makeTree();
-    // L1 routes only topic-x; the needle hit page-c lives in topic-y, so the
-    // open set must include topic-y too.
-    providerStub = {
-      name: "stub",
-      sendMessage: async (messages, options) => {
-        if (options?.tools?.[0]?.name === "open_leaves") {
-          return toolUseResponse("open_leaves", { ids: [1] });
-        }
-        const leaf = leafFromMessages(messages);
-        const ids = leaf === "domain-a/topic-y" ? [1] : [];
-        return toolUseResponse("select_pages", { ids, pinned_ids: [] });
-      },
-    };
-    const result = await orchestrate(makeTurn(1, "anything"), {
-      tree,
-      core: new Set(),
-      needle: fakeNeedle(["page-c"]),
-      workingSet: new WorkingSet(),
-      pageSummary: summaryOf,
-    });
-    expect(result.openedLeaves).toContain("domain-a/topic-y");
-    expect(result.finalInjection).toContain("page-c");
+    expect(t2.currentSelections.map((s) => s.slug)).toEqual(["topic-b"]);
+    expect(t2.finalInjection).toContain("topic-a"); // carried despite the cap
   });
 
-  test("core leaves are always opened even when routing abstains", async () => {
-    const tree = makeTree();
-    // L1 abstains (empty ids); only the core leaf should open.
-    providerStub = {
-      name: "stub",
-      sendMessage: async (messages, options) => {
-        if (options?.tools?.[0]?.name === "open_leaves") {
-          return toolUseResponse("open_leaves", { ids: [] });
-        }
-        const leaf = leafFromMessages(messages);
-        const ids = leaf === "domain-a/topic-y" ? [1] : [];
-        return toolUseResponse("select_pages", { ids, pinned_ids: [] });
-      },
-    };
-    const result = await orchestrate(makeTurn(1, "nothing topical"), {
-      tree,
-      core: new Set(["domain-a/topic-y"]),
-      needle: fakeNeedle([]),
-      workingSet: new WorkingSet(),
-      pageSummary: summaryOf,
-    });
-    expect(result.openedLeaves).toEqual(["domain-a/topic-y"]);
-    // page-c (topic-y member) is core, so the working set must NOT retain it.
-    expect(result.workingSetUnion.has("page-c")).toBe(false);
-    // It still injects this turn via the current selection.
-    expect(result.finalInjection).toContain("page-c");
-  });
-});
+  test("a stale non-pinned page ages out of the carry-forward window", async () => {
+    const lanes = await buildLanes();
+    // window 2: a non-pinned entry unseen for >2 turns evicts.
+    const workingSet = new WorkingSet(150, 2);
 
-// ---------------------------------------------------------------------------
-// Edge cases.
-// ---------------------------------------------------------------------------
-
-describe("orchestrate — edge cases", () => {
-  test("empty needle results do not break orchestration", async () => {
-    const tree = makeTree();
-    providerStub = providerForTurn(TURNS[0]);
-    const result = await orchestrate(makeTurn(1, "tell me about page a"), {
-      tree,
-      core: new Set(),
-      needle: fakeNeedle([]),
-      workingSet: new WorkingSet(),
-      pageSummary: summaryOf,
+    providerStub = selectProvider(["topic-a"]); // turn 1 selects topic-a
+    const t1 = await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet,
     });
-    expect(result.openedLeaves).toEqual(["domain-a/topic-x"]);
-    expect(result.finalInjection).toEqual(["page-a", "page-b"]);
-  });
+    expect(t1.finalInjection).toContain("topic-a");
 
-  test("omitted L1 ids opens only the deterministic lanes, not the whole tree", async () => {
-    const tree = makeTree();
-    // L1 omits ids → routeL1 opens NO routed leaves; only the needle/core lanes
-    // drive the open set, so the whole tree is never fanned out (topic-y, which
-    // nothing routes or needles to, stays closed).
-    providerStub = {
-      name: "stub",
-      sendMessage: async (_messages, options) => {
-        if (options?.tools?.[0]?.name === "open_leaves") {
-          return toolUseResponse("open_leaves", {}); // omitted ids → []
-        }
-        return toolUseResponse("select_pages", {}); // omitted → all members
-      },
-    };
-    const result = await orchestrate(makeTurn(1, "x"), {
-      tree,
-      core: new Set(),
-      needle: fakeNeedle(["page-a"]), // needle opens domain-a/topic-x only
-      workingSet: new WorkingSet(),
-      pageSummary: summaryOf,
+    // Turns 2–4 never re-select topic-a. By turn 4 (4-1=3 > 2) it ages out.
+    providerStub = selectProvider([]);
+    await orchestrate(makeTurn(2, "x"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet,
     });
-    expect(result.openedLeaves).toEqual(["domain-a/topic-x"]);
-    expect(result.finalInjection).toEqual(["page-a", "page-b"]);
+    await orchestrate(makeTurn(3, "x"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet,
+    });
+    const t4 = await orchestrate(makeTurn(4, "x"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet,
+    });
+    expect(t4.finalInjection).not.toContain("topic-a");
   });
 
   test("pinned current-turn selections land in the working set", async () => {
-    const tree = makeTree();
-    providerStub = providerForTurn(TURNS[0]); // pins page-a
+    const lanes = await buildLanes();
     const ws = new WorkingSet();
-    await orchestrate(makeTurn(1, "tell me about page a"), {
-      tree,
-      core: new Set(),
-      needle: fakeNeedle([]),
+    providerStub = selectProvider(["topic-a"], ["topic-a"]);
+    await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
       workingSet: ws,
-      pageSummary: summaryOf,
     });
-    expect(ws.union().has("page-a")).toBe(true);
-    expect(ws.union().has("page-b")).toBe(true);
+    expect(ws.union().has("topic-a")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Degradation: an empty pool and a provider-unavailable path are recall-safe.
+// ---------------------------------------------------------------------------
+
+describe("orchestrate — degradation", () => {
+  test("an empty pool yields no selections and an empty injection", async () => {
+    const lanes = await buildLanes();
+    providerStub = selectProvider([]);
+    const result = await orchestrate(makeTurn(1, "zzzzz no-match"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: { query: () => [], bestSection: () => -1 },
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
+      workingSet: new WorkingSet(),
+    });
+    expect(result.currentSelections).toEqual([]);
+    expect(result.finalInjection).toEqual([]);
   });
 
-  test("a page in multiple opened leaves is deduped with pinned ORed", async () => {
-    // Build a tree where page-shared belongs to BOTH leaves; pin it in one.
-    const leaves: LeafNode[] = [
-      makeLeaf("domain-a/topic-x", ["page-shared"]),
-      makeLeaf("domain-a/topic-y", ["page-shared"]),
-    ];
-    const byPage = new Map<Slug, LeafPath[]>([
-      ["page-shared", ["domain-a/topic-x", "domain-a/topic-y"]],
-    ]);
-    const tree: LeafTree = {
-      leaves: new Map(leaves.map((n) => [n.path, n])),
-      byPage,
-    };
+  test("omitted ids keeps ALL pooled candidates (recall-safe)", async () => {
+    const lanes = await buildLanes();
+    denseHits = [{ article: "topic-b", section: 0 }];
     providerStub = {
       name: "stub",
-      sendMessage: async (messages, options) => {
-        if (options?.tools?.[0]?.name === "open_leaves") {
-          return toolUseResponse("open_leaves", { ids: [1, 2] });
-        }
-        const leaf = leafFromMessages(messages);
-        // Pin only in topic-x; select (unpinned) in topic-y.
-        const pinned_ids = leaf === "domain-a/topic-x" ? [1] : [];
-        return toolUseResponse("select_pages", { ids: [1], pinned_ids });
-      },
+      sendMessage: async () => toolUseResponse({}), // omitted ids → keep all
     };
-    const result = await orchestrate(makeTurn(1, "x"), {
-      tree,
-      core: new Set(),
-      needle: fakeNeedle([]),
+    const result = await orchestrate(makeTurn(1, "apple"), {
+      sectionIndex: lanes.sectionIndex,
+      needle: lanes.needle,
+      denseConfig: config,
+      edgeGraph: lanes.edgeGraph,
       workingSet: new WorkingSet(),
-      pageSummary: summaryOf,
     });
-    // One deduped selection, pinned because it was pinned in topic-x.
-    expect(result.currentSelections).toEqual([
-      { slug: "page-shared", pinned: true },
-    ]);
-    expect(result.finalInjection).toEqual(["page-shared"]);
-  });
-
-  test("needleK defaults to DEFAULT_NEEDLE_K", async () => {
-    const tree = makeTree();
-    let seenK = -1;
-    const needle: NeedleIndex = {
-      query: (_text, k) => {
-        seenK = k;
-        return [];
-      },
-    };
-    providerStub = providerForTurn(TURNS[0]);
-    await orchestrate(makeTurn(1, "x"), {
-      tree,
-      core: new Set(),
-      needle,
-      workingSet: new WorkingSet(),
-      pageSummary: summaryOf,
-    });
-    expect(seenK).toBe(DEFAULT_NEEDLE_K);
+    expect(new Set(result.finalInjection)).toEqual(
+      new Set(["topic-a", "topic-b", "topic-d"]),
+    );
   });
 });
