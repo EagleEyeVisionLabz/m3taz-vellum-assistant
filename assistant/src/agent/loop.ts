@@ -798,7 +798,7 @@ export class AgentLoop {
         : rawHistory;
     const postCompactCtx: PostCompactContext = {
       history: base,
-      requestId,
+      requestId: requestId ?? null,
       conversationId: this.conversationId,
       isNonInteractive,
       modelProfileKey,
@@ -1227,8 +1227,8 @@ export class AgentLoop {
         try {
           const preModelCtx: PreModelCallContext = {
             conversationId: this.conversationId,
-            callSite,
-            systemPrompt: providerOptions.systemPrompt,
+            callSite: callSite ?? null,
+            systemPrompt: providerOptions.systemPrompt ?? null,
             deferAssistantOutput: false,
             logger: rlog,
           };
@@ -1236,7 +1236,8 @@ export class AgentLoop {
             HOOKS.PRE_MODEL_CALL,
             preModelCtx,
           );
-          providerOptions.systemPrompt = finalPreModelCtx.systemPrompt;
+          providerOptions.systemPrompt =
+            finalPreModelCtx.systemPrompt ?? undefined;
           // The hook owns the policy (it sees `callSite`/conversation and
           // self-gates); the loop honors whatever it decides.
           deferAssistantOutput = finalPreModelCtx.deferAssistantOutput;
@@ -1345,7 +1346,7 @@ export class AgentLoop {
           try {
             const ctx: PostModelCallContext = {
               conversationId: this.conversationId,
-              callSite,
+              callSite: callSite ?? null,
               content: structuredClone(message.content),
               stopReason: response.stopReason,
               logger: rlog,
@@ -1679,12 +1680,13 @@ export class AgentLoop {
             conversationId: this.conversationId,
             toolResponse: block as ToolResultContent,
             messages: history,
+            additionalContext: null,
             maxInputTokens: contextWindowTokens,
             logger: rlog,
           };
           const finalCtx = await runHook(HOOKS.POST_TOOL_USE, postToolUseCtx);
           resultBlocks.push(finalCtx.toolResponse);
-          if (finalCtx.additionalContext !== undefined) {
+          if (finalCtx.additionalContext !== null) {
             additionalContextBlocks.push({
               type: "text",
               text: finalCtx.additionalContext,
