@@ -362,10 +362,19 @@ function ScopeControls({
     assistantId,
     conversationId,
   );
-  const options = useMemo(
-    () => buildMessageScopeOptions(messages ?? []),
-    [messages],
-  );
+  const options = useMemo(() => {
+    const built = buildMessageScopeOptions(messages ?? []);
+    // Deep links and older entry points may scope to a message that
+    // isn't a turn head (e.g. an assistant message). Keep the select
+    // honest by surfacing that scope as a selectable option.
+    if (messageId && !built.some((opt) => opt.value === messageId)) {
+      built.push({
+        value: messageId,
+        label: `Message ${shortMessageId(messageId)}`,
+      });
+    }
+    return built;
+  }, [messages, messageId]);
 
   const navigateToScope = (nextMessageId: string | null) => {
     const params = new URLSearchParams();
@@ -415,22 +424,22 @@ interface ScopeOption {
   label: string;
 }
 
+// A "turn" is headed by a user message: the user message plus every
+// assistant response it produced map to the same group of LLM calls,
+// so only user messages are offered as scope options.
 function buildMessageScopeOptions(messages: ConversationMessage[]): ScopeOption[] {
   const seen = new Set<string>();
   const options: ScopeOption[] = [];
   let index = 1;
   for (const m of messages) {
     const id = m.id;
-    if (!id || seen.has(id)) continue;
+    if (!id || seen.has(id) || m.role !== "user") continue;
     seen.add(id);
     const firstTextBlock = normalizeContentBlocks(m)?.find(
       (b): b is ConversationTextBlock => b.type === "text",
     );
     const preview = previewContent(firstTextBlock?.text);
-    const roleLabel = m.role === "assistant" ? "Assistant" : "User";
-    const label = preview
-      ? `${index}. ${roleLabel} · ${preview}`
-      : `${index}. ${roleLabel}`;
+    const label = preview ? `${index}. ${preview}` : `${index}. (no text)`;
     options.push({ value: id, label });
     index += 1;
   }
