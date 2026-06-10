@@ -41,7 +41,7 @@ import {
   type ManifestOverride,
   resolveExecutionTarget,
 } from "../../tools/execution-target.js";
-import { getAllTools, getTool } from "../../tools/registry.js";
+import { getAllTools, getTool, getToolOwner } from "../../tools/registry.js";
 import {
   ACTIVITY_SKIP_SET,
   injectActivityField,
@@ -80,10 +80,7 @@ function handleVoiceConfigUpdate({ body = {} }: RouteHandlerArgs) {
 // Avatar generation
 // ---------------------------------------------------------------------------
 
-async function handleGenerateAvatar({
-  body = {},
-  headers,
-}: RouteHandlerArgs) {
+async function handleGenerateAvatar({ body = {}, headers }: RouteHandlerArgs) {
   const { description } = body as { description?: string };
   if (!description?.trim()) {
     throw new BadRequestError("Description is required.");
@@ -419,7 +416,40 @@ function handleToolNamesList() {
   }
 
   const names = Array.from(nameSet).sort((a, b) => a.localeCompare(b));
-  return { names, schemas };
+  return { names, schemas, tools: buildRegisteredToolEntries() };
+}
+
+interface ToolListEntry {
+  name: string;
+  description: string;
+  riskLevel: string;
+  category: string;
+  /** Tool origin: "core" for built-ins, otherwise "<kind>:<id>" (e.g. "plugin:echo"). */
+  source: string;
+}
+
+/**
+ * Build the registered-tool inventory with the metadata a catalog view
+ * needs: description, author-asserted risk band, category, and the
+ * extension that contributed the tool. Ownership is read from the registry
+ * (the single source of truth) rather than off the `Tool` object, so it
+ * cannot be spoofed by a manifest field. Sorted by name for stable output.
+ * Covers only tools loaded into the registry; skill tools whose manifests
+ * are present but not yet loaded appear in `names`/`schemas` but not here.
+ */
+function buildRegisteredToolEntries(): ToolListEntry[] {
+  return getAllTools()
+    .map((tool) => {
+      const owner = getToolOwner(tool.name);
+      return {
+        name: tool.name,
+        description: tool.description,
+        riskLevel: tool.defaultRiskLevel,
+        category: tool.category,
+        source: owner ? `${owner.kind}:${owner.id}` : "core",
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 async function handleToolPermissionSimulate({ body = {} }: RouteHandlerArgs) {
@@ -766,10 +796,27 @@ export const ROUTES: RouteDefinition[] = [
       requiredScopes: ["settings.read"],
       allowedPrincipalTypes: ACTOR_PRINCIPALS,
     },
-    summary: "List tools",
+    summary: "List registered tools with metadata and schemas",
     description:
-      "Return available tool names with their descriptions, risk levels, and categories.",
+      "Return every registered tool. `tools` carries per-tool metadata (description, author-asserted risk level, category, and contributing source: core, skill, plugin, or MCP server). `names`/`schemas` additionally cover skill tools whose manifests are present but not yet loaded, for the permission-simulator catalog.",
     tags: ["tools"],
+    responseBody: z.object({
+      names: z.array(z.string()),
+      schemas: z.record(z.string(), z.record(z.string(), z.unknown())),
+      tools: z.array(
+        z.object({
+          name: z.string(),
+          description: z.string(),
+          riskLevel: z.string(),
+          category: z.string(),
+          source: z
+            .string()
+            .describe(
+              'Tool origin: "core" for built-ins, otherwise "<kind>:<id>" (e.g. "plugin:echo", "skill:my-skill", "mcp:server").',
+            ),
+        }),
+      ),
+    }),
     handler: () => handleToolNamesList(),
   },
   {

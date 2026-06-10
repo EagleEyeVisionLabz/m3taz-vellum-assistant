@@ -24689,13 +24689,64 @@ paths:
   /v1/tools:
     get:
       operationId: tools_get
-      summary: List tools
-      description: Return available tool names with their descriptions, risk levels, and categories.
+      summary: List registered tools with metadata and schemas
+      description:
+        "Return every registered tool. `tools` carries per-tool metadata (description, author-asserted risk level,
+        category, and contributing source: core, skill, plugin, or MCP server). `names`/`schemas` additionally cover
+        skill tools whose manifests are present but not yet loaded, for the permission-simulator catalog."
       tags:
         - tools
       responses:
         "200":
           description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  names:
+                    type: array
+                    items:
+                      type: string
+                  schemas:
+                    type: object
+                    propertyNames:
+                      type: string
+                    additionalProperties:
+                      type: object
+                      propertyNames:
+                        type: string
+                      additionalProperties: {}
+                  tools:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        description:
+                          type: string
+                        riskLevel:
+                          type: string
+                        category:
+                          type: string
+                        source:
+                          type: string
+                          description:
+                            'Tool origin: "core" for built-ins, otherwise "<kind>:<id>" (e.g. "plugin:echo", "skill:my-skill",
+                            "mcp:server").'
+                      required:
+                        - name
+                        - description
+                        - riskLevel
+                        - category
+                        - source
+                      additionalProperties: false
+                required:
+                  - names
+                  - schemas
+                  - tools
+                additionalProperties: false
   /v1/tools/simulate-permission:
     post:
       operationId: tools_simulatepermission_post
