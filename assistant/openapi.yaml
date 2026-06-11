@@ -22223,6 +22223,22 @@ paths:
                                 - available
                             category:
                               type: string
+                            owner:
+                              type: object
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                    - skill
+                                    - mcp
+                                    - plugin
+                                    - workspace
+                                id:
+                                  type: string
+                              required:
+                                - kind
+                                - id
+                              additionalProperties: false
                             origin:
                               type: string
                               const: vellum
@@ -22261,6 +22277,22 @@ paths:
                                 - available
                             category:
                               type: string
+                            owner:
+                              type: object
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                    - skill
+                                    - mcp
+                                    - plugin
+                                    - workspace
+                                id:
+                                  type: string
+                              required:
+                                - kind
+                                - id
+                              additionalProperties: false
                             origin:
                               type: string
                               const: clawhub
@@ -22319,6 +22351,22 @@ paths:
                                 - available
                             category:
                               type: string
+                            owner:
+                              type: object
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                    - skill
+                                    - mcp
+                                    - plugin
+                                    - workspace
+                                id:
+                                  type: string
+                              required:
+                                - kind
+                                - id
+                              additionalProperties: false
                             origin:
                               type: string
                               const: skillssh
@@ -22392,6 +22440,22 @@ paths:
                                 - available
                             category:
                               type: string
+                            owner:
+                              type: object
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                    - skill
+                                    - mcp
+                                    - plugin
+                                    - workspace
+                                id:
+                                  type: string
+                              required:
+                                - kind
+                                - id
+                              additionalProperties: false
                             origin:
                               type: string
                               const: custom
@@ -22549,6 +22613,22 @@ paths:
                               - available
                           category:
                             type: string
+                          owner:
+                            type: object
+                            properties:
+                              kind:
+                                type: string
+                                enum:
+                                  - skill
+                                  - mcp
+                                  - plugin
+                                  - workspace
+                              id:
+                                type: string
+                            required:
+                              - kind
+                              - id
+                            additionalProperties: false
                           origin:
                             type: string
                             const: vellum
@@ -22772,6 +22852,22 @@ paths:
                               - available
                           category:
                             type: string
+                          owner:
+                            type: object
+                            properties:
+                              kind:
+                                type: string
+                                enum:
+                                  - skill
+                                  - mcp
+                                  - plugin
+                                  - workspace
+                              id:
+                                type: string
+                            required:
+                              - kind
+                              - id
+                            additionalProperties: false
                           origin:
                             type: string
                             const: custom
@@ -22939,6 +23035,22 @@ paths:
                               - available
                           category:
                             type: string
+                          owner:
+                            type: object
+                            properties:
+                              kind:
+                                type: string
+                                enum:
+                                  - skill
+                                  - mcp
+                                  - plugin
+                                  - workspace
+                              id:
+                                type: string
+                            required:
+                              - kind
+                              - id
+                            additionalProperties: false
                           origin:
                             type: string
                             const: vellum
@@ -22977,6 +23089,22 @@ paths:
                               - available
                           category:
                             type: string
+                          owner:
+                            type: object
+                            properties:
+                              kind:
+                                type: string
+                                enum:
+                                  - skill
+                                  - mcp
+                                  - plugin
+                                  - workspace
+                              id:
+                                type: string
+                            required:
+                              - kind
+                              - id
+                            additionalProperties: false
                           origin:
                             type: string
                             const: clawhub
@@ -23035,6 +23163,22 @@ paths:
                               - available
                           category:
                             type: string
+                          owner:
+                            type: object
+                            properties:
+                              kind:
+                                type: string
+                                enum:
+                                  - skill
+                                  - mcp
+                                  - plugin
+                                  - workspace
+                              id:
+                                type: string
+                            required:
+                              - kind
+                              - id
+                            additionalProperties: false
                           origin:
                             type: string
                             const: skillssh
@@ -23108,6 +23252,22 @@ paths:
                               - available
                           category:
                             type: string
+                          owner:
+                            type: object
+                            properties:
+                              kind:
+                                type: string
+                                enum:
+                                  - skill
+                                  - mcp
+                                  - plugin
+                                  - workspace
+                              id:
+                                type: string
+                            required:
+                              - kind
+                              - id
+                            additionalProperties: false
                           origin:
                             type: string
                             const: custom
@@ -23456,6 +23616,22 @@ paths:
                                 - available
                             category:
                               type: string
+                            owner:
+                              type: object
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                    - skill
+                                    - mcp
+                                    - plugin
+                                    - workspace
+                                id:
+                                  type: string
+                              required:
+                                - kind
+                                - id
+                              additionalProperties: false
                             origin:
                               type: string
                               const: vellum
@@ -23494,6 +23670,22 @@ paths:
                                 - available
                             category:
                               type: string
+                            owner:
+                              type: object
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                    - skill
+                                    - mcp
+                                    - plugin
+                                    - workspace
+                                id:
+                                  type: string
+                              required:
+                                - kind
+                                - id
+                              additionalProperties: false
                             origin:
                               type: string
                               const: clawhub
@@ -23552,6 +23744,22 @@ paths:
                                 - available
                             category:
                               type: string
+                            owner:
+                              type: object
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                    - skill
+                                    - mcp
+                                    - plugin
+                                    - workspace
+                                id:
+                                  type: string
+                              required:
+                                - kind
+                                - id
+                              additionalProperties: false
                             origin:
                               type: string
                               const: skillssh
@@ -23625,6 +23833,22 @@ paths:
                                 - available
                             category:
                               type: string
+                            owner:
+                              type: object
+                              properties:
+                                kind:
+                                  type: string
+                                  enum:
+                                    - skill
+                                    - mcp
+                                    - plugin
+                                    - workspace
+                                id:
+                                  type: string
+                              required:
+                                - kind
+                                - id
+                              additionalProperties: false
                             origin:
                               type: string
                               const: custom
