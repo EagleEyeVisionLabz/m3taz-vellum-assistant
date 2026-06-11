@@ -24,7 +24,7 @@ import { GroupActionsMenu, renderGroupMenuItems } from "@/domains/chat/component
 import { ThreadPinToggle } from "@/domains/chat/components/thread-pin-toggle";
 import { SIDEBAR_CONVERSATION_LIMIT, useSidebarState, type UseSidebarStateParams } from "@/domains/chat/use-sidebar-state";
 import { isChannelConversation } from "@/domains/chat/utils/conversation-channel";
-import { buildMoveToGroupTargets, isConversationPinned } from "@/domains/chat/utils/group-conversations";
+import { isConversationPinned } from "@/domains/chat/utils/group-conversations";
 import { usePinnedAppsStore } from "@/stores/pinned-apps-store";
 import type { Conversation } from "@/types/conversation-types";
 import { canMarkRead, canMarkUnread } from "@/utils/conversation-predicates";
@@ -62,8 +62,6 @@ export interface AssistantSideMenuProps extends UseSidebarStateParams {
   onUnarchiveConversation?: (conversation: Conversation) => void;
   onMarkConversationUnread?: (conversation: Conversation) => void;
   onMarkConversationRead?: (conversation: Conversation) => void;
-  onMoveToGroup?: (conversation: Conversation, groupId: string) => void;
-  onRemoveFromGroup?: (conversation: Conversation) => void;
   onRenameGroup?: (groupId: string) => void;
   onDeleteGroup?: (groupId: string) => void;
   onMarkAllReadInGroup?: (conversations: Conversation[]) => void;
@@ -137,8 +135,6 @@ export function AssistantSideMenu({
   onMarkConversationUnread,
   onMarkConversationRead,
   conversationGroups,
-  onMoveToGroup,
-  onRemoveFromGroup,
   onRenameGroup,
   onDeleteGroup,
   onMarkAllReadInGroup,
@@ -185,8 +181,6 @@ export function AssistantSideMenu({
     conversation: Conversation,
   ): ConversationMenuItemsProps => {
     const isChannel = isChannelConversation(conversation);
-    const inCustomGroup =
-      !!conversation.groupId && !conversation.groupId.startsWith("system:");
     return {
       isPinned: isConversationPinned(conversation),
       isArchived: conversation.archivedAt != null,
@@ -212,18 +206,6 @@ export function AssistantSideMenu({
           ? () => onMarkConversationUnread(conversation)
           : undefined,
       isMarkUnreadDisabled: !canMarkUnread(conversation),
-      moveToGroups:
-        sidebar.conversationGroupsEnabled && onMoveToGroup
-          ? buildMoveToGroupTargets(conversation, conversationGroups)
-          : undefined,
-      onMoveToGroup:
-        sidebar.conversationGroupsEnabled && onMoveToGroup
-          ? (groupId) => onMoveToGroup(conversation, groupId)
-          : undefined,
-      onRemoveFromGroup:
-        sidebar.conversationGroupsEnabled && onRemoveFromGroup && inCustomGroup
-          ? () => onRemoveFromGroup(conversation)
-          : undefined,
       onAnalyze:
         onAnalyze && conversation.conversationId != null && !isChannel
           ? () => onAnalyze(conversation)

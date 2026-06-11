@@ -321,8 +321,6 @@ export function ChatLayout() {
     handleMarkConversationUnread,
     handleMarkConversationRead,
     handleTogglePinConversation,
-    handleMoveToGroup,
-    handleRemoveFromGroup,
     handleRenameConversation,
     handleMarkAllReadInGroup,
     handleArchiveAllInGroup,
@@ -344,7 +342,6 @@ export function ChatLayout() {
     <ChatConversationHeader
       assistantId={assistantId}
       activeConversation={activeConversation}
-      conversationGroups={conversationGroups}
       headerSupplements={headerSupplements}
       showLlmInspector={showLlmInspector}
       onArchive={handleArchiveConversation}
@@ -352,8 +349,6 @@ export function ChatLayout() {
       onMarkUnread={handleMarkConversationUnread}
       onMarkRead={handleMarkConversationRead}
       onPinToggle={handleTogglePinConversation}
-      onMoveToGroup={handleMoveToGroup}
-      onRemoveFromGroup={handleRemoveFromGroup}
       onRename={handleRenameConversation}
     />
   ) : null);
@@ -571,8 +566,6 @@ export function ChatLayout() {
       onUnarchiveConversation={handleUnarchiveConversation}
       onMarkConversationUnread={handleMarkConversationUnread}
       onMarkConversationRead={handleMarkConversationRead}
-      onMoveToGroup={handleMoveToGroup}
-      onRemoveFromGroup={handleRemoveFromGroup}
       onRenameGroup={handleRenameGroup}
       onDeleteGroup={handleDeleteGroup}
       onMarkAllReadInGroup={handleMarkAllReadInGroup}
