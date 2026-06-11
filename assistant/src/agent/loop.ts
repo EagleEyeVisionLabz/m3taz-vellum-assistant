@@ -1745,6 +1745,7 @@ export class AgentLoop {
             toolResponse: block as ToolResultContent,
             messages: history,
             additionalContext: null,
+            model: response.model,
             maxInputTokens: contextWindowTokens,
             logger: rlog,
           };
