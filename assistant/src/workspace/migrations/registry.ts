@@ -96,6 +96,7 @@ import { bumpHeartbeatInterval30mTo60mMigration } from "./095-bump-heartbeat-int
 import { reduceQualityProfileEffortMigration } from "./096-reduce-quality-profile-effort.js";
 import { enableAdaptiveThinkingManagedProfilesMigration } from "./097-enable-adaptive-thinking-managed-profiles.js";
 import { removeStaleUpdatesBulletinFileMigration } from "./098-remove-stale-updates-bulletin-file.js";
+import { disableCacheOneShotCallsitesMigration } from "./099-disable-cache-one-shot-callsites.js";
 import { migrateToWorkspaceVolumeMigration } from "./migrate-to-workspace-volume.js";
 import type { WorkspaceMigration } from "./types.js";
 
@@ -203,4 +204,5 @@ export const WORKSPACE_MIGRATIONS: WorkspaceMigration[] = [
   reduceQualityProfileEffortMigration,
   enableAdaptiveThinkingManagedProfilesMigration,
   removeStaleUpdatesBulletinFileMigration,
+  disableCacheOneShotCallsitesMigration,
 ];
