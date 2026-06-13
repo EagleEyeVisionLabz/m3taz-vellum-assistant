@@ -2,10 +2,15 @@
  * Tests for the token-budget controls (Max Output Tokens / Context Window) in
  * `ProfileAdvancedParams`:
  *
- *   1. With no override set, the field surfaces the model's resolved default
+ *   1. With no override set, the field surfaces the resolved default
  *      numerically — a "Default · NNN" label, the slider thumb parked at the
  *      resolved value, and the same value as the input's placeholder — instead
- *      of hiding it behind the bare word "Default".
+ *      of hiding it behind the bare word "Default". Each field's default is the
+ *      value a profile inherits from `llm.default` (Max Output from
+ *      `maxTokens`, Context Window from `contextWindow.maxInputTokens`) — the
+ *      explicitly-configured value when the config sets one, otherwise the
+ *      schema default (64K / 200K) — clamped to the model's hard ceiling so it
+ *      never advertises a budget the model can't honor.
  *   2. The limit can be set explicitly by typing into the numeric input, not
  *      only by dragging the slider; clearing the input restores the default,
  *      and out-of-range entries clamp to the model's bounds on blur.
@@ -27,7 +32,6 @@ import {
 const MODEL = {
   maxOutputTokens: 128_000,
   contextWindowTokens: 1_000_000,
-  defaultContextWindowTokens: 200_000,
 };
 
 interface FieldOverrides {
@@ -36,6 +40,9 @@ interface FieldOverrides {
   contextWindowMaxInputTokens?: number | null;
   onMaxTokensChange?: (v: number | null) => void;
   onContextWindowChange?: (v: number | null) => void;
+  selectedModel?: typeof MODEL;
+  defaultMaxOutputTokens?: number;
+  defaultContextWindowMaxInputTokens?: number;
 }
 
 function renderParams(overrides: FieldOverrides) {
@@ -44,7 +51,11 @@ function renderParams(overrides: FieldOverrides) {
       visibility={overrides.visibility}
       isReadOnly={false}
       model="claude-opus-4"
-      selectedModel={MODEL}
+      selectedModel={overrides.selectedModel ?? MODEL}
+      defaultMaxOutputTokens={overrides.defaultMaxOutputTokens}
+      defaultContextWindowMaxInputTokens={
+        overrides.defaultContextWindowMaxInputTokens
+      }
       maxTokens={overrides.maxTokens ?? null}
       onMaxTokensChange={overrides.onMaxTokensChange ?? (() => {})}
       contextWindowMaxInputTokens={
@@ -85,7 +96,8 @@ afterEach(() => cleanup());
 describe("ProfileAdvancedParams token-budget fields", () => {
   test("shows the resolved default value when no override is set", () => {
     // GIVEN the Context Window field with no override (value === null)
-    // AND a model whose applied default is 200K within a 1M window
+    // AND no configured llm.default, so the 200K schema fallback applies
+    // within the model's 1M window
     renderParams({
       visibility: contextOnly,
       contextWindowMaxInputTokens: null,
@@ -109,19 +121,136 @@ describe("ProfileAdvancedParams token-budget fields", () => {
     expect(input.placeholder).toBe("200000");
   });
 
-  test("Max Output Tokens reads its default from the model's max output", () => {
+  test("Max Output Tokens reads its default from the resolved schema default, not the model max", () => {
     // GIVEN the Max Output Tokens field with no override
-    // AND a model whose max output is 128K
+    // AND a model whose max output (128K) exceeds the global schema default
     renderParams({ visibility: maxTokensOnly, maxTokens: null });
 
     // WHEN the field renders in its default state
 
-    // THEN the field surfaces the model's max output as the resolved default
+    // THEN it surfaces the resolved runtime default (llm.default.maxTokens =
+    // 64K) — what the assistant actually uses when maxTokens is unset — rather
+    // than the model's higher output ceiling
+    expect(screen.getByText("Default · 64K")).toBeTruthy();
+    const input = screen.getByRole("spinbutton", {
+      name: "Max Output Tokens (tokens)",
+    }) as HTMLInputElement;
+    expect(input.placeholder).toBe("64000");
+
+    // AND the model's higher ceiling still governs the slider/input maximum
+    expect(screen.getByRole("slider").getAttribute("aria-valuemax")).toBe(
+      "128000",
+    );
+  });
+
+  test("Max Output Tokens clamps its default to a model ceiling below the schema default", () => {
+    // GIVEN the Max Output Tokens field with no override
+    // AND a model whose max output (32K) is below the global schema default
+    renderParams({
+      visibility: maxTokensOnly,
+      maxTokens: null,
+      selectedModel: {
+        maxOutputTokens: 32_000,
+        contextWindowTokens: 1_000_000,
+      },
+    });
+
+    // WHEN the field renders in its default state
+
+    // THEN the default is bounded by the model's ceiling so the field never
+    // advertises an output budget the model cannot emit
+    expect(screen.getByText("Default · 32K")).toBeTruthy();
+    const slider = screen.getByRole("slider");
+    expect(slider.getAttribute("aria-valuenow")).toBe("32000");
+    expect(slider.getAttribute("aria-valuemax")).toBe("32000");
+    const input = screen.getByRole("spinbutton", {
+      name: "Max Output Tokens (tokens)",
+    }) as HTMLInputElement;
+    expect(input.placeholder).toBe("32000");
+  });
+
+  test("Max Output Tokens honors a configured llm.default.maxTokens above the schema default", () => {
+    // GIVEN the Max Output Tokens field with no override
+    // AND a workspace whose llm.default.maxTokens (128K) is set above the
+    // schema default, with a model whose ceiling can hold it
+    renderParams({
+      visibility: maxTokensOnly,
+      maxTokens: null,
+      defaultMaxOutputTokens: 128_000,
+    });
+
+    // WHEN the field renders in its default state
+
+    // THEN it surfaces the configured inherited default rather than the 64K
+    // schema fallback
     expect(screen.getByText("Default · 128K")).toBeTruthy();
     const input = screen.getByRole("spinbutton", {
       name: "Max Output Tokens (tokens)",
     }) as HTMLInputElement;
     expect(input.placeholder).toBe("128000");
+  });
+
+  test("Max Output Tokens clamps a configured llm.default.maxTokens to the model ceiling", () => {
+    // GIVEN the Max Output Tokens field with no override
+    // AND a configured llm.default.maxTokens (128K) above a model whose
+    // ceiling (32K) cannot emit it
+    renderParams({
+      visibility: maxTokensOnly,
+      maxTokens: null,
+      defaultMaxOutputTokens: 128_000,
+      selectedModel: {
+        maxOutputTokens: 32_000,
+        contextWindowTokens: 1_000_000,
+      },
+    });
+
+    // WHEN the field renders in its default state
+
+    // THEN the configured default is still bounded by the model's ceiling
+    expect(screen.getByText("Default · 32K")).toBeTruthy();
+    expect(screen.getByRole("slider").getAttribute("aria-valuenow")).toBe(
+      "32000",
+    );
+  });
+
+  test("Context Window honors a configured llm.default.contextWindow.maxInputTokens", () => {
+    // GIVEN the Context Window field with no override
+    // AND a workspace whose llm.default.contextWindow.maxInputTokens (150K) is
+    // set, with a model window large enough to hold it
+    renderParams({
+      visibility: contextOnly,
+      contextWindowMaxInputTokens: null,
+      defaultContextWindowMaxInputTokens: 150_000,
+    });
+
+    // WHEN the field renders in its default state
+
+    // THEN it surfaces the configured inherited default rather than the 200K
+    // schema fallback
+    expect(screen.getByText("Default · 150K")).toBeTruthy();
+    const input = screen.getByRole("spinbutton", {
+      name: "Context Window (tokens)",
+    }) as HTMLInputElement;
+    expect(input.placeholder).toBe("150000");
+  });
+
+  test("Context Window clamps a configured maxInputTokens to the model window", () => {
+    // GIVEN the Context Window field with no override
+    // AND a configured llm.default.contextWindow.maxInputTokens (2M) above the
+    // model's window (1M)
+    renderParams({
+      visibility: contextOnly,
+      contextWindowMaxInputTokens: null,
+      defaultContextWindowMaxInputTokens: 2_000_000,
+    });
+
+    // WHEN the field renders in its default state
+
+    // THEN the configured default is bounded by the model's window
+    expect(screen.getByText("Default · 1M")).toBeTruthy();
+    const slider = screen.getByRole("slider");
+    expect(slider.getAttribute("aria-valuenow")).toBe("1000000");
+    expect(slider.getAttribute("aria-valuemax")).toBe("1000000");
   });
 
   test("typing an explicit limit commits the parsed value", () => {
